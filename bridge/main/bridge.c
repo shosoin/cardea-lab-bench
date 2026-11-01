@@ -27,6 +27,7 @@
 #include "esp_event.h"
 #include "nvs_flash.h"
 #include "driver/i2c_slave.h"
+#include "driver/gpio.h"
 #include "led_strip.h"
 
 #if __has_include("config.local.h")
@@ -184,7 +185,7 @@ static size_t sim_exchange(const uint8_t *req, size_t req_len, uint8_t *resp) {
 }
 
 /* ---------------------------------------------------------------- I2C target */
-typedef enum { EV_FRAME, EV_READ } bridge_ev_type_t;
+typedef enum { EV_FRAME, EV_READ, EV_RESET } bridge_ev_type_t;
 typedef struct {
     bridge_ev_type_t type;
     uint16_t len;
@@ -293,6 +294,22 @@ static void sim_task(void *arg) {
     }
 }
 
+/* Watchdog: if SCL stays low (the target stretching a read nobody released, e.g. the host was
+ * reset or re-flashed mid-transfer), the bus is stuck for everyone. Re-create the peripheral. */
+static void watchdog_task(void *arg) {
+    int low = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        low = gpio_get_level(BRIDGE_I2C_SCL) == 0 ? low + 1 : 0;
+        if (low == 6) {                          /* 1.5 s */
+            static bridge_ev_t ev = { .type = EV_RESET };
+            ESP_LOGW(TAG, "SCL held low for 1.5 s: resetting the I2C target");
+            xQueueSend(events, &ev, 0);
+            led_flash(LED_WARN, 1);
+        }
+    }
+}
+
 static void stats_task(void *arg) {
     uint32_t prev = 0;
     for (;;) {
@@ -309,6 +326,13 @@ static void i2c_task(void *arg) {
     static bridge_ev_t ev;
     for (;;) {
         if (xQueueReceive(events, &ev, portMAX_DELAY) != pdTRUE) continue;
+        if (ev.type == EV_RESET) {
+            taskENTER_CRITICAL(&slot_lock);
+            out_len = 0;
+            taskEXIT_CRITICAL(&slot_lock);
+            i2c_restart();
+            continue;
+        }
         if (ev.type == EV_FRAME) {
             if (ev.len < 5) continue;            /* not a T=1 frame (e.g. a bus probe) */
             taskENTER_CRITICAL(&slot_lock);
@@ -370,5 +394,6 @@ void app_main(void) {
     xTaskCreate(sim_task, "sim", 6144, NULL, 5, &sim_task_handle);
     xTaskCreate(i2c_task, "i2c", 4096, NULL, 12, NULL);
     xTaskCreate(stats_task, "stats", 3072, NULL, 2, NULL);
+    xTaskCreate(watchdog_task, "wdog", 3072, NULL, 3, NULL);
     sim_connect();                               /* connect early so the first frame is fast */
 }

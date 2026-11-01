@@ -16,7 +16,7 @@ Getting byte-exact behaviour out of the S3's I2C target took three workarounds. 
 2. **`i2c_slave_write()` only fills the 32-byte hardware FIFO when all the data fits.** Otherwise everything goes to a ring buffer that an interrupt drains later, at a random point relative to the host's reads (empty reads, shifted bytes). The response is written in two calls: 16 bytes that land in the FIFO before the stretch is released, then the rest.
 3. **One byte is dropped after a 2-byte read** (the byte pre-fetched while the host clocks the last byte). A filler byte follows NAD+PCB (`BRIDGE_FILL_AFTER_HEADER`).
 
-On top of that, the peripheral is **re-created for every new request**, so no byte left from a previous exchange can sit in front of the next response.
+On top of that, the peripheral is **re-created for every new request**, so no byte left from a previous exchange can sit in front of the next response, and a **watchdog** re-creates it if SCL stays low for 1.5 s (a host reset or re-flashed in the middle of a read would otherwise leave the bus stuck, and the host would just see no secure element).
 - Status goes to the USB console. The on-board RGB LED stays **off**; it only gives short, dim flashes: two green when connected to the simulator, red on errors.
 
 ## Build and flash (ESP-IDF 5.5)
