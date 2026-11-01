@@ -32,6 +32,7 @@ Behaviour worth knowing:
 
 - While the simulator has not answered (or is unreachable), the bridge has no frame to serve: the host reads no `0xA5` start byte and polls again, as it does while a real chip is busy. A simulator that does not answer within 2 s is dropped and reconnected on the next frame, so the host's own retries recover the link after a simulator restart.
 - ESP32-S3 I2C-target quirks it works around: SCL is stretched on every read address match until software releases it; a write only goes straight into the hardware FIFO if it all fits (so the first chunk is kept small); one byte is dropped after a 2-byte read (a filler byte is inserted after the header); the peripheral is re-created for each request.
+- Each frame the host writes is checked (length against LEN, and CRC) before it is relayed. A damaged one, e.g. a write cut short when the receive FIFO is not drained in time while Wi-Fi is busy, is dropped and logged; the host gets no answer and retransmits, as it would after a bus error with a real chip.
 - A watchdog re-creates the I2C target if SCL stays low for 1.5 s (e.g. the host was reset or re-flashed in the middle of a read).
 - The RGB LED stays off and only flashes to signal events (green: connected; red: simulator unreachable; amber: I2C watchdog).
 

@@ -325,6 +325,26 @@ static void stats_task(void *arg) {
     }
 }
 
+/* CRC-16/X-25 of T=1 over I2C (UM11225), sent least significant byte first. */
+static uint16_t t1_crc(const uint8_t *d, size_t n) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < n; i++) {
+        crc ^= d[i];
+        for (int b = 0; b < 8; b++) crc = (crc & 1) ? (crc >> 1) ^ 0x8408 : crc >> 1;
+    }
+    return crc ^ 0xFFFF;
+}
+
+/* A frame as the host meant it: NAD PCB LEN, LEN bytes, CRC that checks. A write cut short (seen when
+ * the I2C receive FIFO is not drained in time while Wi-Fi is busy) is dropped: forwarded, it would
+ * leave the simulator waiting for the missing bytes. Unanswered, the host retransmits by itself. */
+static uint32_t n_bad_frames;
+static bool t1_frame_ok(const uint8_t *d, size_t n) {
+    if (n < 5 || n != 3u + d[2] + 2u) return false;
+    uint16_t crc = t1_crc(d, n - 2);
+    return d[n - 2] == (crc & 0xFF) && d[n - 1] == (crc >> 8);
+}
+
 static void i2c_task(void *arg) {
     static bridge_ev_t ev;
     for (;;) {
@@ -338,6 +358,14 @@ static void i2c_task(void *arg) {
         }
         if (ev.type == EV_FRAME) {
             if (ev.len < 5) continue;            /* not a T=1 frame (e.g. a bus probe) */
+            if (!t1_frame_ok(ev.data, ev.len)) {
+                n_bad_frames++;
+                ESP_LOGW(TAG, "dropping a damaged frame (%u B, LEN %u), the host will retransmit (%lu so far)",
+                         (unsigned)ev.len, ev.data[2], (unsigned long)n_bad_frames);
+                i2c_restart();
+                xQueueReset(events);
+                continue;
+            }
             taskENTER_CRITICAL(&slot_lock);
             memcpy(req, ev.data, ev.len);
             req_len = ev.len;
