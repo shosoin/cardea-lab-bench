@@ -270,6 +270,8 @@ static size_t out_len;                     /* != 0: written to the FIFO at the n
 static portMUX_TYPE slot_lock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t sim_task_handle;
 static volatile uint32_t n_reads, n_resp, n_wfail;
+static volatile uint32_t n_frames;          /* frames received from the host */
+static volatile bool sim_busy;              /* an exchange with the simulator is in progress */
 
 static void sim_task(void *arg) {
     static uint8_t local_req[T1_MAX_FRAME], local_resp[T1_MAX_FRAME];
@@ -280,7 +282,9 @@ static void sim_task(void *arg) {
         memcpy(local_req, req, n);
         taskEXIT_CRITICAL(&slot_lock);
         hex("host -> SE", local_req, n);
+        sim_busy = true;
         size_t m = sim_exchange(local_req, n, local_resp);
+        sim_busy = false;
         if (!m) continue;
         hex("SE -> host", local_resp, m);
         /* Optional filler after NAD+PCB (BRIDGE_FILL_AFTER_HEADER): a workaround for a dropped
@@ -299,8 +303,13 @@ static void sim_task(void *arg) {
 
 /* Watchdog: if SCL stays low (the target stretching a read nobody released, e.g. the host was
  * reset or re-flashed mid-transfer), the bus is stuck for everyone. Re-create the peripheral. */
+/* Second check: the host keeps polling (reads) but none of its writes arrives and no answer is
+ * pending. Seen once: the target kept serving reads but no longer delivered received frames, so the
+ * host waited for an answer to frames the bridge never saw, and the key stalled until the bridge was
+ * reset. A host only polls this long after writing a frame, so re-create the peripheral. */
 static void watchdog_task(void *arg) {
-    int low = 0;
+    int low = 0, deaf = 0;
+    uint32_t prev_reads = 0, prev_frames = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(250));
         low = gpio_get_level(BRIDGE_I2C_SCL) == 0 ? low + 1 : 0;
@@ -309,6 +318,18 @@ static void watchdog_task(void *arg) {
             ESP_LOGW(TAG, "SCL held low for 1.5 s: resetting the I2C target");
             xQueueSend(events, &ev, 0);
             led_flash(LED_WARN, 1);
+        }
+        uint32_t r = n_reads, f = n_frames;
+        bool polling = r - prev_reads > 20;      /* > 80 reads/s */
+        deaf = (polling && f == prev_frames && !sim_busy && out_len == 0) ? deaf + 1 : 0;
+        prev_reads = r;
+        prev_frames = f;
+        if (deaf == 12) {                        /* 3 s */
+            static bridge_ev_t ev = { .type = EV_RESET };
+            ESP_LOGW(TAG, "host polling for 3 s with no frame received: resetting the I2C target");
+            xQueueSend(events, &ev, 0);
+            led_flash(LED_WARN, 2);
+            deaf = 0;
         }
     }
 }
@@ -358,6 +379,7 @@ static void i2c_task(void *arg) {
         }
         if (ev.type == EV_FRAME) {
             if (ev.len < 5) continue;            /* not a T=1 frame (e.g. a bus probe) */
+            n_frames++;
             if (!t1_frame_ok(ev.data, ev.len)) {
                 n_bad_frames++;
                 ESP_LOGW(TAG, "dropping a damaged frame (%u B, LEN %u), the host will retransmit (%lu so far)",
