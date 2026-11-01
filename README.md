@@ -1,14 +1,18 @@
 # se05x-lab-bridge
 
-A lab setup to develop firmware for the **NXP SE05x** secure elements (SE050/SE051) **without the chip**: your microcontroller talks real I2C to what it believes is the secure element, and a simulator answers.
+An I2C bridge for **[SE050Sim](https://github.com/wolfSSL/simulators)**, wolfSSL's simulator of the **NXP SE05x** secure elements (SE050/SE051), so that firmware can be developed **without the chip**: your microcontroller talks real I2C to what it believes is the secure element, and SE050Sim answers.
+
+All the secure-element behaviour is wolfSSL's work: this repository only adds the hardware bridge (an ESP32-S3 acting as the I2C target), a container for the simulator, and a few patches to it that we propose upstream. Many thanks to wolfSSL for publishing SE050Sim under the GPL.
 
 ```
 Your MCU (unchanged firmware, real I2C driver, real T=1 stack)
    │  I2C, address 0x48, like the chip
 ESP32-S3 bridge (relays bytes, knows nothing about crypto)
    │  Wi-Fi / TCP
-SE05x simulator (T=1 + APDU applet: objects, policies, UserID, counters, ECC/EdDSA/RSA/AES)
+wolfSSL SE050Sim (T=1 + APDU applet: objects, policies, sessions, counters, ECC/EdDSA/RSA/AES)
 ```
+
+The bridge relays raw T=1 frames between the I2C bus and a TCP socket and knows nothing about the applet, so it works with SE050Sim (or anything that speaks the same framing over TCP).
 
 The firmware under test cannot tell the difference at the protocol level, so the I2C driver, the T=1 stack (e.g. NXP Plug & Trust) and the APDU usage are all exercised. It is built for [Cardea Key](https://github.com/shosoin/cardea-key), but nothing here is specific to it.
 
