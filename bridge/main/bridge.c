@@ -5,8 +5,11 @@
  * forwards that frame over TCP to the simulator and keeps the response. NXP's T=1 stack reads a
  * response in three I2C reads (NAD+PCB, LEN, payload+CRC) and, while the first byte is not the
  * start of frame 0xA5, it simply polls again with a growing delay (up to ~20 s). So while the
- * simulator has not answered yet, every poll gets "00 00"; once the answer is here, the whole frame
- * is queued in the I2C FIFO and the host drains it with its three reads.
+ * simulator has not answered yet, polls read whatever the idle I2C target returns (never 0xA5, so
+ * NXP retries); as soon as the answer arrives it is queued in the I2C TX FIFO, and the next poll
+ * drains it with the usual three reads. The ESP32-S3 stretches SCL on every read address match
+ * until software releases it, so each read request is released at once with a zero-length write,
+ * and the response is pushed to the FIFO by the simulator task as soon as it arrives.
  *
  * Status: USB console logs; the RGB LED stays OFF and only gives short, dim flashes for events.
  *
@@ -43,6 +46,10 @@
 #ifndef BRIDGE_LED_GPIO
 #define BRIDGE_LED_GPIO 48
 #endif
+#ifndef BRIDGE_FILL_AFTER_HEADER
+#define BRIDGE_FILL_AFTER_HEADER 1   /* the S3 drops the byte after a 2-byte read: see sim_task */
+#endif
+#define FIFO_FIRST_CHUNK 16          /* < SOC_I2C_FIFO_LEN (32): goes straight into the hardware FIFO */
 
 #define T1_MAX_FRAME (3 + 254 + 2)   /* NAD PCB LEN + IFSC 254 + CRC16 */
 #define T1_SOF_FROM_SE 0xA5
@@ -206,6 +213,9 @@ static bool IRAM_ATTR on_request(i2c_slave_dev_handle_t dev, const i2c_slave_req
     return woken == pdTRUE;
 }
 
+static void i2c_start(void);
+static void i2c_restart(void);
+
 static void i2c_start(void) {
     i2c_slave_config_t cfg = {
         .i2c_port = -1,
@@ -221,7 +231,22 @@ static void i2c_start(void) {
     ESP_ERROR_CHECK(i2c_new_slave_device(&cfg, &i2c_dev));
     i2c_slave_event_callbacks_t cbs = { .on_receive = on_receive, .on_request = on_request };
     ESP_ERROR_CHECK(i2c_slave_register_event_callbacks(i2c_dev, &cbs, NULL));
-    ESP_LOGI(TAG, "I2C target at 0x%02X on SDA=%d SCL=%d", BRIDGE_I2C_ADDR, BRIDGE_I2C_SDA, BRIDGE_I2C_SCL);
+    static bool logged;
+    if (!logged) {
+        ESP_LOGI(TAG, "I2C target at 0x%02X on SDA=%d SCL=%d", BRIDGE_I2C_ADDR, BRIDGE_I2C_SDA, BRIDGE_I2C_SCL);
+        logged = true;
+    }
+}
+
+/* Fresh peripheral for every new request: empty hardware FIFO and ring buffer, so no byte left over
+ * from a previous exchange can sit in front of the next response. It happens during the host's
+ * first poll, which then reads junk (never 0xA5) and simply polls again. */
+static void i2c_restart(void) {
+    if (i2c_dev) {
+        i2c_del_slave_device(i2c_dev);
+        i2c_dev = NULL;
+    }
+    i2c_start();
 }
 
 static void hex(const char *what, const uint8_t *d, size_t n) {
@@ -232,12 +257,15 @@ static void hex(const char *what, const uint8_t *d, size_t n) {
     ESP_LOGI(TAG, "%s (%u B): %s", what, (unsigned)n, line);
 }
 
-/* The I2C task answers every read immediately (the host's bus is stretched meanwhile), and the
- * simulator task does the slow TCP exchange. They share one response slot. */
-static uint8_t req[T1_MAX_FRAME], resp[T1_MAX_FRAME];
-static size_t req_len, resp_len;           /* resp_len != 0: a response is ready to be read */
+/* The I2C task hands each request to the simulator task, which does the slow TCP exchange and
+ * pushes the response into the I2C TX FIFO. */
+static uint8_t req[T1_MAX_FRAME];
+static size_t req_len;
+static uint8_t out_buf[T1_MAX_FRAME + 1];   /* response ready for the host, with filler */
+static size_t out_len;                     /* != 0: written to the FIFO at the next read request */
 static portMUX_TYPE slot_lock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t sim_task_handle;
+static volatile uint32_t n_reads, n_resp, n_wfail;
 
 static void sim_task(void *arg) {
     static uint8_t local_req[T1_MAX_FRAME], local_resp[T1_MAX_FRAME];
@@ -251,18 +279,34 @@ static void sim_task(void *arg) {
         size_t m = sim_exchange(local_req, n, local_resp);
         if (!m) continue;
         hex("SE -> host", local_resp, m);
+        /* Optional filler after NAD+PCB (BRIDGE_FILL_AFTER_HEADER): a workaround for a dropped
+         * byte seen before the FIFO-first write below; kept switchable to verify it is unneeded. */
         taskENTER_CRITICAL(&slot_lock);
-        memcpy(resp, local_resp, m);
-        resp_len = m;
+        size_t p = 0;
+        out_buf[p++] = local_resp[0];
+        out_buf[p++] = local_resp[1];
+        if (BRIDGE_FILL_AFTER_HEADER) out_buf[p++] = 0xFF;
+        out_buf[p++] = local_resp[2];
+        memcpy(out_buf + p, local_resp + 3, m - 3);
+        out_len = p + m - 3;
         taskEXIT_CRITICAL(&slot_lock);
+    }
+}
+
+static void stats_task(void *arg) {
+    uint32_t prev = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        if (n_reads + n_resp != prev) {
+            ESP_LOGI(TAG, "read requests seen %lu, responses queued %lu, queue errors %lu",
+                     (unsigned long)n_reads, (unsigned long)n_resp, (unsigned long)n_wfail);
+            prev = n_reads + n_resp;
+        }
     }
 }
 
 static void i2c_task(void *arg) {
     static bridge_ev_t ev;
-    static uint8_t out[T1_MAX_FRAME];
-    static const uint8_t not_ready[2] = { 0x00, 0x00 };
-    uint32_t written;
     for (;;) {
         if (xQueueReceive(events, &ev, portMAX_DELAY) != pdTRUE) continue;
         if (ev.type == EV_FRAME) {
@@ -270,21 +314,45 @@ static void i2c_task(void *arg) {
             taskENTER_CRITICAL(&slot_lock);
             memcpy(req, ev.data, ev.len);
             req_len = ev.len;
-            resp_len = 0;                        /* a new request invalidates any old response */
+            out_len = 0;                          /* a new request discards any stale response */
             taskEXIT_CRITICAL(&slot_lock);
+            i2c_restart();
+            xQueueReset(events);                  /* drop the read request of the old peripheral */
             xTaskNotifyGive(sim_task_handle);
         }
-        else {                                   /* host reads and the FIFO is empty */
+        else {
+            /* The S3 stretches SCL on every read address match until software releases it, even if
+             * the FIFO already holds data. A zero-length write releases the stretch (and tops the
+             * FIFO up from the driver's ring buffer). If no response is queued yet, the host reads
+             * whatever the idle target returns, never 0xA5, and NXP's stack polls again. */
+            static uint8_t local[T1_MAX_FRAME + 1];
             size_t n = 0;
+            uint32_t w;
+            n_reads++;
             taskENTER_CRITICAL(&slot_lock);
-            if (resp_len && resp[0] == T1_SOF_FROM_SE) {
-                n = resp_len;
-                memcpy(out, resp, n);
-                resp_len = 0;
-            }
+            if (out_len) { n = out_len; memcpy(local, out_buf, n); out_len = 0; }
             taskEXIT_CRITICAL(&slot_lock);
-            if (n) i2c_slave_write(i2c_dev, out, n, &written, 100);
-            else   i2c_slave_write(i2c_dev, not_ready, sizeof(not_ready), &written, 100);
+            /* Writing here, while SCL is stretched for this read, is the only moment the target is
+             * idle and waiting; a zero-length write just releases the stretch. */
+            /* i2c_slave_write() only puts data straight into the 32-byte hardware FIFO when ALL of
+             * it fits; otherwise everything goes to a ring buffer that an interrupt drains into the
+             * FIFO later, at a random point relative to the host's reads (empty reads, shifted
+             * bytes). So the first chunk is small enough to land in the FIFO before the stretch is
+             * released, and the rest follows. */
+            esp_err_t e;
+            size_t first = n > FIFO_FIRST_CHUNK ? FIFO_FIRST_CHUNK : n;
+            uint32_t w2 = 0;
+            e = i2c_slave_write(i2c_dev, local, first, &w, 100);
+            if (e == ESP_OK && n > first) {
+                e = i2c_slave_write(i2c_dev, local + first, n - first, &w2, 100);
+                w += w2;
+            }
+            if (e != ESP_OK || w != n) n_wfail++;
+            if (n) {
+                n_resp++;
+                ESP_EARLY_LOGI(TAG, "pushed response at read request #%lu: %u B, accepted %lu (%s)",
+                               (unsigned long)n_reads, (unsigned)n, (unsigned long)w, esp_err_to_name(e));
+            }
         }
     }
 }
@@ -301,5 +369,6 @@ void app_main(void) {
     i2c_start();
     xTaskCreate(sim_task, "sim", 6144, NULL, 5, &sim_task_handle);
     xTaskCreate(i2c_task, "i2c", 4096, NULL, 12, NULL);
+    xTaskCreate(stats_task, "stats", 3072, NULL, 2, NULL);
     sim_connect();                               /* connect early so the first frame is fast */
 }

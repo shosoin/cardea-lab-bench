@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.13)
+# Pass -DPICO_SDK_PATH=... or set the PICO_SDK_PATH environment variable.
+if(NOT PICO_SDK_PATH AND DEFINED ENV{PICO_SDK_PATH})
+    set(PICO_SDK_PATH $ENV{PICO_SDK_PATH} CACHE PATH "pico-sdk")
+endif()
+include(${PICO_SDK_PATH}/external/pico_sdk_import.cmake)
+project(se05x_probe C CXX ASM)
+pico_sdk_init()
+add_executable(se05x_probe probe.c)
+target_link_libraries(se05x_probe pico_stdlib hardware_i2c)
+pico_enable_stdio_usb(se05x_probe 1)
+pico_enable_stdio_uart(se05x_probe 1)
+pico_add_extra_outputs(se05x_probe)

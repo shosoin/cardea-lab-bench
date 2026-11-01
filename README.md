@@ -19,7 +19,8 @@ The firmware under test cannot tell the difference at the protocol level, so the
 | Part | State |
 |---|---|
 | `sim/` — simulator container | works |
-| `bridge/` — ESP32-S3 I2C-target ↔ TCP bridge | works (Wi-Fi + TCP + I2C target); end-to-end test with a host MCU in progress |
+| `bridge/` — ESP32-S3 I2C-target ↔ TCP bridge | works: 44/44 exchanges, 16-21 ms round trip over Wi-Fi |
+| `tools/pico-probe/` — Pico / Pico 2 test program | works |
 
 ## The simulator (`sim/`)
 
@@ -31,6 +32,10 @@ docker run -d --name se05x-sim -p 8050:8050 -v se05x-sim-data:/data se05x-sim
 ```
 
 On TCP port 8050 it speaks raw T=1-over-I2C frames: each request is one complete frame (`NAD PCB LEN payload CRC16`), and so is each response. A first check is the interface soft reset that NXP's stack sends at start-up, `5a cf 00 37 7f`, which returns a 35-byte ATR (`JCOP4 ATPO`).
+
+## Testing the chain: `tools/pico-probe`
+
+A tiny Pico / Pico 2 program that talks to the SE05x (or the bridge) exactly like NXP's T=1 stack: it sends the interface soft reset, polls for the `0xA5` start of frame, reads LEN and the rest, checks the CRC and prints the ATR on USB serial every 5 s. It recovers the I2C bus by itself after errors. Build it with the pico-sdk (`-DPICO_BOARD=pico2` for a Pico 2).
 
 ## Wiring (example: Raspberry Pi Pico 2)
 
