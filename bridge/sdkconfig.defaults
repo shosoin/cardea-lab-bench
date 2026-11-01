@@ -1,0 +1,5 @@
+CONFIG_IDF_TARGET="esp32s3"
+# I2C slave driver v2: clock stretching + on_request callback when the master reads an empty FIFO
+CONFIG_I2C_ENABLE_SLAVE_DRIVER_VERSION_2=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144

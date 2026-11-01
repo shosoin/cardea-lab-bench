@@ -19,7 +19,7 @@ The firmware under test cannot tell the difference at the protocol level, so the
 | Part | State |
 |---|---|
 | `sim/` — simulator container | works |
-| `bridge/` — ESP32-S3 I2C-target ↔ TCP bridge | in progress |
+| `bridge/` — ESP32-S3 I2C-target ↔ TCP bridge | works (Wi-Fi + TCP + I2C target); end-to-end test with a host MCU in progress |
 
 ## The simulator (`sim/`)
 

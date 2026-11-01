@@ -1,0 +1,11 @@
+/* Copy to config.local.h (ignored by git) and fill in. Never commit the real file. */
+#define BRIDGE_WIFI_SSID     "your-ssid"
+#define BRIDGE_WIFI_PASSWORD "your-password"
+#define BRIDGE_SIM_HOST      "192.0.2.10"   /* IPv4 of the machine running the simulator */
+#define BRIDGE_SIM_PORT      8050
+/* Optional overrides (defaults in main/bridge.c):
+#define BRIDGE_I2C_SDA       8
+#define BRIDGE_I2C_SCL       9
+#define BRIDGE_I2C_ADDR      0x48
+#define BRIDGE_LED_GPIO      48            // on-board WS2812; -1 = no LED
+*/
