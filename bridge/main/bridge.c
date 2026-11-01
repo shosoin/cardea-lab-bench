@@ -13,7 +13,7 @@
  *
  * Status: USB console logs; the RGB LED stays OFF and only gives short, dim flashes for events.
  *
- * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 #include <string.h>
 #include <sys/socket.h>

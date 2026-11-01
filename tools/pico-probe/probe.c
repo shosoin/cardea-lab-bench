@@ -8,7 +8,7 @@
  * 3. read LEN, then LEN + 2 (payload + CRC), and check the CRC-16/X-25
  *
  * Writes nothing to flash beyond its own image, so data kept by other firmware survives.
- * SPDX-License-Identifier: GPL-3.0-or-later
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 #include <stdio.h>
 #include "pico/stdlib.h"

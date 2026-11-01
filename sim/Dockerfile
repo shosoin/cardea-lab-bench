@@ -1,12 +1,11 @@
-# SE05x simulator for lab use: the TCP server of wolfSSL's SE050Sim
-# (https://github.com/wolfSSL/simulators, GPL-3.0-or-later), pinned to a commit, plus our patches.
-# It speaks raw T=1-over-I2C frames on TCP port 8050. NOT a security device.
+# SE050Sim (wolfSSL, https://github.com/wolfSSL/simulators, GPL-3.0-or-later) TCP server for the lab:
+# it speaks raw T=1-over-I2C frames on TCP port 8050. NOT a security device.
+# Built from the repository and commit below (a fork with the features this lab uses).
 FROM rust:1.85-bookworm AS build
-ARG SIMULATORS_COMMIT=3f557793727685dc70a9295576e29ce3ebfe8e9c
+ARG SIMULATORS_REPO=https://github.com/shosoin/simulators.git
+ARG SIMULATORS_COMMIT=f298b3ae72dfa53cec62385437491945f0aa9f91
 WORKDIR /src
-RUN git clone https://github.com/wolfSSL/simulators.git . && git checkout --quiet "$SIMULATORS_COMMIT"
-COPY patches/ /patches/
-RUN for p in /patches/*.patch; do git apply "$p"; done
+RUN git clone "$SIMULATORS_REPO" . && git checkout --quiet "$SIMULATORS_COMMIT"
 # The dev-dependency (the Rust driver used by its tests) is not needed for the server.
 RUN cd SE050Sim/se050-sim && sed -i '/^\[dev-dependencies\]/,$d' Cargo.toml \
     && cargo build --release --bin tcp_server
