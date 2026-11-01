@@ -145,7 +145,10 @@ static bool sim_connect(void) {
     if (s < 0) return false;
     int one = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    struct timeval tv = { .tv_sec = 10 };
+    /* The simulator answers in milliseconds. If it does not answer (e.g. it was restarted and has
+     * nothing to resend for the host's R-block), give up soon: while waiting, the bridge cannot
+     * serve the host, which keeps retrying and recovers on its own. */
+    struct timeval tv = { .tv_sec = 2 };
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     if (connect(s, (struct sockaddr *)&a, sizeof(a)) != 0) {
         ESP_LOGE(TAG, "cannot reach the simulator at %s:%d", BRIDGE_SIM_HOST, BRIDGE_SIM_PORT);
