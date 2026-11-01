@@ -1,9 +1,9 @@
 diff --git a/SE050Sim/se050-sim/src/applet_session.rs b/SE050Sim/se050-sim/src/applet_session.rs
 new file mode 100644
-index 0000000..cb44cae
+index 0000000..4e1e6c0
 --- /dev/null
 +++ b/SE050Sim/se050-sim/src/applet_session.rs
-@@ -0,0 +1,554 @@
+@@ -0,0 +1,573 @@
 +/* applet_session.rs
 + *
 + * Copyright (C) 2026 wolfSSL Inc. and Cardea Key contributors
@@ -61,6 +61,19 @@ index 0000000..cb44cae
 +const INS_AUTH_OBJECT: u8 = 0x40;
 +const INS_INTERNAL_AUTHENTICATE: u8 = 0x88;
 +const DDC_INITIAL_MCV: u8 = 0x08;
++
++/// SE050_SIM_TRACE=1: log every command as dispatched (after any SCP03
++/// unwrapping) with its status word, to stderr. For debugging a host.
++pub fn trace(context: &str, apdu: &ParsedApdu, sw: u16) {
++    if std::env::var("SE050_SIM_TRACE").map(|v| v == "1").unwrap_or(false) {
++        let data: String = apdu.data.iter().take(48).map(|b| format!("{:02x}", b)).collect();
++        eprintln!(
++            "[trace] {:<8} {:02x} {:02x} {:02x} {:02x} [{}] {}{} -> {:04x}",
++            context, apdu.cla, apdu.ins, apdu.p1, apdu.p2, apdu.data.len(), data,
++            if apdu.data.len() > 48 { "..." } else { "" }, sw
++        );
++    }
++}
 +
 +struct AppletSession {
 +    auth_id: [u8; 4],
@@ -150,7 +163,9 @@ index 0000000..cb44cae
 +            };
 +            if cmd.ins == INS_INTERNAL_AUTHENTICATE {
 +                let auth_id = session.auth_id;
-+                return match internal_authenticate(&cmd, auth_id, store) {
++                let result = internal_authenticate(&cmd, auth_id, store);
++                trace("eckauth", &cmd, result.as_ref().map(|_| SW_NO_ERROR).unwrap_or_else(|e| *e));
++                return match result {
 +                    Ok((resp, scp)) => {
 +                        session.scp = Some(scp);
 +                        resp
@@ -175,6 +190,9 @@ index 0000000..cb44cae
 +        let cmd = match scp.unwrap_command(&raw) {
 +            Ok(c) => c,
 +            Err(sw) => {
++                if std::env::var("SE050_SIM_TRACE").map(|v| v == "1").unwrap_or(false) {
++                    eprintln!("[trace] session  unwrap failed {:04x}, session closed", sw);
++                }
 +                self.sessions.remove(&sid);
 +                return ApduResponse::error(sw);
 +            }
@@ -193,6 +211,7 @@ index 0000000..cb44cae
 +            store.set_session_owner([0; 4]);
 +            r
 +        };
++        trace("session", &cmd, resp.sw);
 +        let wrapped = scp.wrap_response(resp);
 +        // The session also ends when its own Authentication Object is gone
 +        // (deleted from within the session, AN12543 3.6.4).
@@ -875,7 +894,7 @@ index 01544d5..6dfc124 100644
      /// C-DECRYPTION is active, and return the inner plain APDU for dispatch.
      /// A MAC/padding failure returns Err(SW) and the caller drops the session.
 diff --git a/SE050Sim/se050-sim/src/t1.rs b/SE050Sim/se050-sim/src/t1.rs
-index 64fb2ff..6e418dd 100644
+index 64fb2ff..e9871da 100644
 --- a/SE050Sim/se050-sim/src/t1.rs
 +++ b/SE050Sim/se050-sim/src/t1.rs
 @@ -166,6 +166,8 @@ pub struct T1Responder {
@@ -903,27 +922,43 @@ index 64fb2ff..6e418dd 100644
                  self.selected_ssd = ParsedApdu::parse(apdu_bytes)
                      .map(|a| crate::handlers::session::selects_ssd(&a))
                      .unwrap_or(false);
-@@ -367,7 +371,10 @@ impl T1Responder {
+@@ -343,6 +347,9 @@ impl T1Responder {
+                 let inner = match unwrapped {
+                     Ok(a) => a,
+                     Err(sw) => {
++                        if std::env::var("SE050_SIM_TRACE").map(|v| v == "1").unwrap_or(false) {
++                            eprintln!("[trace] platform unwrap failed {:04x}, channel closed", sw);
++                        }
+                         self.scp03.reset();
+                         return ApduResponse::error(sw);
+                     }
+@@ -367,7 +374,12 @@ impl T1Responder {
                          }
                      }
                  } else {
 -                    dispatch::dispatch(&inner, store, true)
-+                    match self.applet_sessions.intercept(&inner, store, true) {
++                    let r = match self.applet_sessions.intercept(&inner, store, true) {
 +                        Some(r) => r,
 +                        None => dispatch::dispatch(&inner, store, true),
-+                    }
++                    };
++                    crate::applet_session::trace("platform", &inner, r.sw);
++                    r
                  };
                  return match &mut self.scp03 {
                      Scp03State::Active(sess) => sess.wrap_response(resp),
-@@ -391,7 +398,10 @@ impl T1Responder {
+@@ -391,7 +403,14 @@ impl T1Responder {
          }
  
          match ParsedApdu::parse(apdu_bytes) {
 -            Ok(apdu) => dispatch::dispatch(&apdu, store, false),
-+            Ok(apdu) => match self.applet_sessions.intercept(&apdu, store, false) {
-+                Some(r) => r,
-+                None => dispatch::dispatch(&apdu, store, false),
-+            },
++            Ok(apdu) => {
++                let r = match self.applet_sessions.intercept(&apdu, store, false) {
++                    Some(r) => r,
++                    None => dispatch::dispatch(&apdu, store, false),
++                };
++                crate::applet_session::trace("plain", &apdu, r.sw);
++                r
++            }
              Err(e) => {
                  log::warn!("Failed to parse APDU: {:?}", e);
                  ApduResponse::error(0x6700) // Wrong length
