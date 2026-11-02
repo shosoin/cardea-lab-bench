@@ -29,3 +29,24 @@ idf.py -p /dev/ttyACM0 flash monitor
 ```
 
 Defaults: SDA = GPIO8, SCL = GPIO9, LED = GPIO48 (WS2812). Override them in `config.local.h`. The ESP32-S3 has 2.4 GHz Wi-Fi only.
+
+## Bench lines: BOOTSEL and RUN of the host board
+
+Besides the I2C target, the bridge can act as a "finger" for unattended tests (`main/bench.c`).
+Two GPIOs are open-drain outputs, each through a **1 kΩ** series resistor:
+
+| ESP32-S3 | Host (Raspberry Pi Pico 2) |
+|---|---|
+| GPIO4 (`BRIDGE_BENCH_BOOTSEL_GPIO`) | TP6, the BOOTSEL line (also the user button of pico-fido based firmware) |
+| GPIO5 (`BRIDGE_BENCH_RUN_GPIO`) | RUN, pin 30 |
+| GND | GND (already shared with the I2C wiring) |
+
+"Pressed" pulls the line to GND, like the board's button; "released" leaves it floating. The pins
+are never driven high (TP6 is the flash chip select), and they float while the S3 boots or is
+flashed. Commands, one per line on the console UART (replies start with `BENCH`): `ping`,
+`press [ms]`, `hold`, `release`, `reset [ms]`, `bootsel`, `status`.
+
+Open the console with **DTR and RTS both asserted**. On the DevKit, other combinations go through
+the auto-program circuit and reset the S3 (and drop the simulator connection).
+
+This is for a test bench only: pressing the button from software defeats user presence.

@@ -29,6 +29,7 @@
 #include "driver/i2c_slave.h"
 #include "driver/gpio.h"
 #include "led_strip.h"
+#include "bench.h"
 
 #if __has_include("config.local.h")
 #include "config.local.h"
@@ -436,6 +437,7 @@ static void i2c_task(void *arg) {
 
 void app_main(void) {
     led_init();
+    bench_start();                               /* BOOTSEL/RUN lines released as early as possible */
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
