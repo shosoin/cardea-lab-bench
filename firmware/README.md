@@ -12,7 +12,7 @@ firmware/
   config.local.h              Wi-Fi + simulator address (from config.local.h.example; ignored by git)
 ```
 
-Each module has its own `Kconfig` menu ("Lab bench: ...") with an on/off switch and its pins; `sdkconfig.defaults` turns them all on. A module that is off is not compiled and registers no console commands. A planned third module, `fp_emu`, will emulate the fingerprint sensor ([#2](https://github.com/shosoin/se05x-lab-bridge/issues/2)).
+Each module has its own `Kconfig` menu ("Lab bench: ...") with an on/off switch and its pins; `sdkconfig.defaults` turns them all on. A module that is off is not compiled and registers no console commands. A planned third module, `fp_emu`, will emulate the fingerprint sensor ([#2](https://github.com/shosoin/cardea-lab-bench/issues/2)).
 
 | Module | Default pins |
 |---|---|

@@ -1,5 +1,5 @@
 /*
- * se05x-lab-bridge — Raspberry Pi Pico / Pico 2 probe: talks to an SE05x (real chip or the bridge)
+ * cardea-lab-bench — Raspberry Pi Pico / Pico 2 probe: talks to an SE05x (real chip or the bridge)
  * the way NXP's T=1-over-I2C stack does, and prints the ATR. Output on USB serial and UART0 (GP0).
  *
  * I2C0 on GP4 (SDA) / GP5 (SCL), 100 kHz, address 0x48.

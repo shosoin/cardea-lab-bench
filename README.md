@@ -1,6 +1,14 @@
-# se05x-lab-bridge
+# cardea-lab-bench
 
-An I2C bridge for **[SE050Sim](https://github.com/wolfSSL/simulators)**, wolfSSL's simulator of the **NXP SE05x** secure elements (SE050/SE051), so that firmware can be developed **without the chip**: your microcontroller talks real I2C to what it believes is the secure element, and SE050Sim answers. Many thanks to wolfSSL for publishing it.
+Test equipment on **one ESP32-S3 board**, so firmware for a Raspberry Pi Pico / Pico 2 can be tested **unattended** (on a desk or from a CI runner), without the parts it normally talks to and without anyone pressing buttons:
+
+- **I2C bridge emulating an NXP SE05x / SE051 secure element**: the host talks real I2C to what it believes is the chip, and **[SE050Sim](https://github.com/wolfSSL/simulators)**, wolfSSL's simulator, answers. Many thanks to wolfSSL for publishing it.
+- **Remote control of the host board**: presses its BOOTSEL / user button and resets it (RUN), so a script can flash it, reboot it and confirm user presence.
+- **Fingerprint sensor emulator** for the R502 family (R502-F Pro), planned ([#2](https://github.com/shosoin/cardea-lab-bench/issues/2)).
+
+Each function is a separate module that can be switched off. It was built for [Cardea Key](https://github.com/shosoin/cardea-key), but nothing here is specific to it. (Formerly `se05x-lab-bridge`.)
+
+How the SE05x bridge fits in:
 
 ```
 Your MCU (unchanged firmware, real I2C driver, real T=1 stack)
@@ -10,19 +18,19 @@ ESP32-S3 bridge (relays frames, knows nothing about crypto)
 SE050Sim TCP server
 ```
 
-The bridge relays raw T=1 frames between the I2C bus and a TCP socket and knows nothing about the applet. The firmware under test cannot tell the difference at the protocol level, so the I2C driver, the T=1 stack (e.g. NXP Plug & Trust) and the APDU usage are all exercised. It was built for [Cardea Key](https://github.com/shosoin/cardea-key), but nothing here is specific to it.
+The bridge relays raw T=1 frames between the I2C bus and a TCP socket and knows nothing about the applet. The firmware under test cannot tell the difference at the protocol level, so the I2C driver, the T=1 stack (e.g. NXP Plug & Trust) and the APDU usage are all exercised.
 
 > **This is a lab prototype for testing, not a security device.** The simulator keeps keys in clear, behind an unauthenticated TCP socket, and the bench module presses the host's button from software: it defeats user presence on purpose. Use it on a trusted local network, with test boards only.
 
 ## One ESP32-S3, several pieces of test equipment
 
-The bridge firmware grew into a small **lab bench**: one ESP32-S3 board stands in for the parts around the host board, so the host's firmware can be tested unattended (for example from a CI runner). Each module is an ESP-IDF component in `firmware/components/` and can be switched off in `menuconfig`; if you only want the SE05x bridge, turn the others off.
+The firmware started as the SE05x bridge alone. Each module is an ESP-IDF component in `firmware/components/` and can be switched off in `menuconfig`; if you only want the SE05x bridge, turn the others off.
 
 | Module | What it does | Switch (`menuconfig`) | State |
 |---|---|---|---|
 | `se05x_bridge` | I2C target at `0x48` that relays T=1 frames to SE050Sim over Wi-Fi/TCP | `CONFIG_LAB_SE05X_BRIDGE` | works: 16-21 ms round trip; recovers by itself when the simulator restarts |
 | `bench_io` | Presses the host's BOOTSEL / user button and resets it (RUN), through open-drain GPIOs | `CONFIG_LAB_BENCH_IO` | works: drives the unattended test battery of Cardea Key |
-| `fp_emu` | Emulates a fingerprint sensor module (R502 family, UART) with a template store | — | planned ([#2](https://github.com/shosoin/se05x-lab-bridge/issues/2)) |
+| `fp_emu` | Emulates a fingerprint sensor module (R502 family, UART) with a template store | — | planned ([#2](https://github.com/shosoin/cardea-lab-bench/issues/2)) |
 | `lab_common` | Status LED and the shared command console (`BENCH ...` replies) | always on | works |
 
 Other parts of the repository:
