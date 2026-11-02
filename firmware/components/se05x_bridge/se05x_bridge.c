@@ -1,5 +1,6 @@
 /*
- * se05x-lab-bridge — ESP32-S3 firmware: I2C target that stands in for an NXP SE05x.
+ * Lab bench — SE05x bridge: an I2C target that stands in for an NXP SE05x and relays each T=1
+ * frame to the SE050Sim simulator over TCP.
  *
  * The host MCU writes a T=1-over-I2C frame to address 0x48, as it would to the chip. The bridge
  * forwards that frame over TCP to the simulator and keeps the response. NXP's T=1 stack reads a
@@ -25,31 +26,26 @@
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
-#include "nvs_flash.h"
 #include "driver/i2c_slave.h"
 #include "driver/gpio.h"
-#include "led_strip.h"
-#include "bench.h"
+#include "sdkconfig.h"
+#include "lab_led.h"
+#include "se05x_bridge.h"
 
+/* Wi-Fi and simulator address: config.local.h (ignored by git, next to the project's CMakeLists).
+ * Pins and I2C address: menuconfig, "Lab bench: SE05x bridge". */
 #if __has_include("config.local.h")
 #include "config.local.h"
 #else
 #error "Copy config.local.h.example to config.local.h and fill in your Wi-Fi and simulator address"
 #endif
-#ifndef BRIDGE_I2C_SDA
-#define BRIDGE_I2C_SDA 8
-#endif
-#ifndef BRIDGE_I2C_SCL
-#define BRIDGE_I2C_SCL 9
-#endif
-#ifndef BRIDGE_I2C_ADDR
-#define BRIDGE_I2C_ADDR 0x48
-#endif
-#ifndef BRIDGE_LED_GPIO
-#define BRIDGE_LED_GPIO 48
-#endif
-#ifndef BRIDGE_FILL_AFTER_HEADER
+#define BRIDGE_I2C_SDA           CONFIG_LAB_SE05X_I2C_SDA
+#define BRIDGE_I2C_SCL           CONFIG_LAB_SE05X_I2C_SCL
+#define BRIDGE_I2C_ADDR          CONFIG_LAB_SE05X_I2C_ADDR
+#ifdef CONFIG_LAB_SE05X_FILL_AFTER_HEADER
 #define BRIDGE_FILL_AFTER_HEADER 1   /* the S3 drops the byte after a 2-byte read: see sim_task */
+#else
+#define BRIDGE_FILL_AFTER_HEADER 0
 #endif
 #define FIFO_FIRST_CHUNK 16          /* < SOC_I2C_FIFO_LEN (32): goes straight into the hardware FIFO */
 
@@ -57,36 +53,6 @@
 #define T1_SOF_FROM_SE 0xA5
 
 static const char *TAG = "bridge";
-
-/* ---------------------------------------------------------------- LED: off unless signalling */
-static led_strip_handle_t led;
-typedef enum { LED_OK, LED_WARN, LED_ERR } led_event_t;
-
-static void led_init(void) {
-    if (BRIDGE_LED_GPIO < 0) return;
-    led_strip_config_t cfg = { .strip_gpio_num = BRIDGE_LED_GPIO, .max_leds = 1 };
-    led_strip_rmt_config_t rmt = { .resolution_hz = 10 * 1000 * 1000 };
-    if (led_strip_new_rmt_device(&cfg, &rmt, &led) == ESP_OK) {
-        led_strip_clear(led);   /* some boards light the LED at power-up: switch it off */
-    }
-    else {
-        led = NULL;
-    }
-}
-
-/* One short, dim flash (max 12/255 per channel), then off. */
-static void led_flash(led_event_t ev, int times) {
-    if (!led) return;
-    uint8_t r = 0, g = 0, b = 0;
-    if (ev == LED_OK) g = 12; else if (ev == LED_WARN) { r = 10; g = 6; } else r = 12;
-    for (int i = 0; i < times; i++) {
-        led_strip_set_pixel(led, 0, r, g, b);
-        led_strip_refresh(led);
-        vTaskDelay(pdMS_TO_TICKS(60));
-        led_strip_clear(led);
-        vTaskDelay(pdMS_TO_TICKS(140));
-    }
-}
 
 /* ---------------------------------------------------------------- Wi-Fi */
 static EventGroupHandle_t net_events;
@@ -154,12 +120,12 @@ static bool sim_connect(void) {
     if (connect(s, (struct sockaddr *)&a, sizeof(a)) != 0) {
         ESP_LOGE(TAG, "cannot reach the simulator at %s:%d", BRIDGE_SIM_HOST, BRIDGE_SIM_PORT);
         close(s);
-        led_flash(LED_ERR, 2);
+        lab_led_flash(LAB_LED_ERR, 2);
         return false;
     }
     sim_sock = s;
     ESP_LOGI(TAG, "connected to the simulator at %s:%d", BRIDGE_SIM_HOST, BRIDGE_SIM_PORT);
-    led_flash(LED_OK, 2);
+    lab_led_flash(LAB_LED_OK, 2);
     return true;
 }
 
@@ -184,7 +150,7 @@ static size_t sim_exchange(const uint8_t *req, size_t req_len, uint8_t *resp) {
         ESP_LOGW(TAG, "simulator link lost, reconnecting");
         sim_close();
     }
-    led_flash(LED_ERR, 3);
+    lab_led_flash(LAB_LED_ERR, 3);
     return 0;
 }
 
@@ -318,7 +284,7 @@ static void watchdog_task(void *arg) {
             static bridge_ev_t ev = { .type = EV_RESET };
             ESP_LOGW(TAG, "SCL held low for 1.5 s: resetting the I2C target");
             xQueueSend(events, &ev, 0);
-            led_flash(LED_WARN, 1);
+            lab_led_flash(LAB_LED_WARN, 1);
         }
         uint32_t r = n_reads, f = n_frames;
         bool polling = r - prev_reads > 20;      /* > 80 reads/s */
@@ -329,7 +295,7 @@ static void watchdog_task(void *arg) {
             static bridge_ev_t ev = { .type = EV_RESET };
             ESP_LOGW(TAG, "host polling for 3 s with no frame received: resetting the I2C target");
             xQueueSend(events, &ev, 0);
-            led_flash(LED_WARN, 2);
+            lab_led_flash(LAB_LED_WARN, 2);
             deaf = 0;
         }
     }
@@ -435,14 +401,7 @@ static void i2c_task(void *arg) {
     }
 }
 
-void app_main(void) {
-    led_init();
-    bench_start();                               /* BOOTSEL/RUN lines released as early as possible */
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        nvs_flash_init();
-    }
+void se05x_bridge_start(void) {
     events = xQueueCreate(8, sizeof(bridge_ev_t));
     wifi_start();
     i2c_start();

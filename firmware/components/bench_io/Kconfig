@@ -1,0 +1,23 @@
+menu "Lab bench: BOOTSEL and RUN lines of the host board"
+
+    config LAB_BENCH_IO
+        bool "Drive the host's BOOTSEL (user button) and RUN lines"
+        default y
+        help
+            Two open-drain GPIOs, each through a 1 kOhm series resistor, so a script can press
+            the host's button, reset it or put it in its USB bootloader. Test bench only:
+            pressing the button from software defeats user presence.
+
+    config LAB_BENCH_BOOTSEL_GPIO
+        int "GPIO wired (through 1k) to the host's BOOTSEL / button line (-1 = unused)"
+        depends on LAB_BENCH_IO
+        range -1 48
+        default 4
+
+    config LAB_BENCH_RUN_GPIO
+        int "GPIO wired (through 1k) to the host's RUN (reset) line (-1 = unused)"
+        depends on LAB_BENCH_IO
+        range -1 48
+        default 5
+
+endmenu

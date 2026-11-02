@@ -1,0 +1,7 @@
+/* Copy to config.local.h (ignored by git) and fill in. Never commit the real file.
+ * Only needed by the SE05x bridge module. Pins and module switches are in menuconfig
+ * ("Lab bench: ..." menus); defaults in each components/<module>/Kconfig. */
+#define BRIDGE_WIFI_SSID     "your-ssid"
+#define BRIDGE_WIFI_PASSWORD "your-password"
+#define BRIDGE_SIM_HOST      "192.0.2.10"   /* IPv4 of the machine running the simulator */
+#define BRIDGE_SIM_PORT      8050

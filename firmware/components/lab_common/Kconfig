@@ -1,0 +1,11 @@
+menu "Lab bench: common (status LED, console)"
+
+    config LAB_LED_GPIO
+        int "GPIO of the on-board WS2812 status LED (-1 = no LED)"
+        range -1 48
+        default 48
+        help
+            The LED stays off and only gives short, dim flashes for events (green: connected,
+            red: error, amber: watchdog).
+
+endmenu

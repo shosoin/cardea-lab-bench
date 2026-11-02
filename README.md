@@ -12,21 +12,33 @@ SE050Sim TCP server
 
 The bridge relays raw T=1 frames between the I2C bus and a TCP socket and knows nothing about the applet. The firmware under test cannot tell the difference at the protocol level, so the I2C driver, the T=1 stack (e.g. NXP Plug & Trust) and the APDU usage are all exercised. It was built for [Cardea Key](https://github.com/shosoin/cardea-key), but nothing here is specific to it.
 
-> **This is a lab tool, not a security device.** The simulator keeps keys in clear, behind an unauthenticated TCP socket. Use it on a trusted local network only.
+> **This is a lab prototype for testing, not a security device.** The simulator keeps keys in clear, behind an unauthenticated TCP socket, and the bench module presses the host's button from software: it defeats user presence on purpose. Use it on a trusted local network, with test boards only.
 
-## Status
+## One ESP32-S3, several pieces of test equipment
+
+The bridge firmware grew into a small **lab bench**: one ESP32-S3 board stands in for the parts around the host board, so the host's firmware can be tested unattended (for example from a CI runner). Each module is an ESP-IDF component in `firmware/components/` and can be switched off in `menuconfig`; if you only want the SE05x bridge, turn the others off.
+
+| Module | What it does | Switch (`menuconfig`) | State |
+|---|---|---|---|
+| `se05x_bridge` | I2C target at `0x48` that relays T=1 frames to SE050Sim over Wi-Fi/TCP | `CONFIG_LAB_SE05X_BRIDGE` | works: 16-21 ms round trip; recovers by itself when the simulator restarts |
+| `bench_io` | Presses the host's BOOTSEL / user button and resets it (RUN), through open-drain GPIOs | `CONFIG_LAB_BENCH_IO` | works: drives the unattended test battery of Cardea Key |
+| `fp_emu` | Emulates a fingerprint sensor module (R502 family, UART) with a template store | — | planned ([#2](https://github.com/shosoin/se05x-lab-bridge/issues/2)) |
+| `lab_common` | Status LED and the shared command console (`BENCH ...` replies) | always on | works |
+
+Other parts of the repository:
 
 | Part | State |
 |---|---|
-| `bridge/` — ESP32-S3 I2C-target ↔ TCP bridge | works: 16-21 ms round trip over Wi-Fi; recovers by itself when the simulator restarts |
-| `tools/pico-probe/` — Pico / Pico 2 test program | works |
+| `tools/pico-probe/` — Pico / Pico 2 test program for the I2C link | works |
 | `sim/` — container recipe for the simulator | works |
 
-## The bridge (`bridge/`)
+## The firmware (`firmware/`)
 
-ESP-IDF 5.5 firmware for an ESP32-S3 board. It acts as an I2C target at address `0x48` (SDA GPIO8, SCL GPIO9 by default), joins your Wi-Fi and keeps a TCP connection to the simulator. Each T=1 frame the host writes is sent to the simulator, and its answer is served on the host's next reads.
+ESP-IDF 5.5 firmware for an ESP32-S3 board. Copy `firmware/config.local.h.example` to `firmware/config.local.h`, fill in your Wi-Fi and the simulator's address (only the SE05x bridge needs them), adjust pins in `idf.py menuconfig` ("Lab bench: ..." menus) if yours differ, then `idf.py build flash` from `firmware/`. Details of each module, wiring and console commands: [firmware/README.md](firmware/README.md).
 
-Copy `bridge/config.local.h.example` to `bridge/config.local.h`, fill in your Wi-Fi and the simulator's address, then `idf.py build flash` from `bridge/`.
+### SE05x bridge
+
+It acts as an I2C target at address `0x48` (SDA GPIO8, SCL GPIO9 by default), joins your Wi-Fi and keeps a TCP connection to the simulator. Each T=1 frame the host writes is sent to the simulator, and its answer is served on the host's next reads.
 
 Behaviour worth knowing:
 
@@ -47,6 +59,8 @@ A tiny Pico / Pico 2 program that talks to the SE05x (or the bridge) exactly lik
 | GP4 (I2C0 SDA, pin 6) | SDA (GPIO8 by default) |
 | GP5 (I2C0 SCL, pin 7) | SCL (GPIO9 by default) |
 | GND (pin 8) | GND |
+| TP6 (BOOTSEL / user button), through 1 kΩ | GPIO4 (`bench_io`, optional) |
+| RUN (pin 30), through 1 kΩ | GPIO5 (`bench_io`, optional) |
 
 Wire them pin to pin with short wires: both ends enable their internal pull-ups (the bridge does, and so do `pico-probe` and the Pico firmware we test), which is enough at 100 kHz. For longer wires, add 4.7 kΩ pull-ups from SDA and SCL to 3.3 V. Power each board from its own USB; only the grounds are joined.
 
