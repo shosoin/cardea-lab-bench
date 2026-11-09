@@ -6,3 +6,4 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 # Lab bench modules (menuconfig: "Lab bench: ...")
 CONFIG_LAB_SE05X_BRIDGE=y
 CONFIG_LAB_BENCH_IO=y
+CONFIG_LAB_FP_EMU=y

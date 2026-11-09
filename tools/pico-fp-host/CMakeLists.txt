@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.13)
+# Pass -DPICO_SDK_PATH=... or set the PICO_SDK_PATH environment variable. Built for the Pico 2:
+# -DPICO_BOARD=pico2 (default here); -DPICO_BOARD=pico for an RP2040 Pico.
+if(NOT PICO_SDK_PATH AND DEFINED ENV{PICO_SDK_PATH})
+    set(PICO_SDK_PATH $ENV{PICO_SDK_PATH} CACHE PATH "pico-sdk")
+endif()
+if(NOT PICO_BOARD)
+    set(PICO_BOARD pico2)
+endif()
+include(${PICO_SDK_PATH}/external/pico_sdk_import.cmake)
+project(fp_host C CXX ASM)
+pico_sdk_init()
+add_executable(fp_host fp_host.c)
+target_link_libraries(fp_host pico_stdlib hardware_uart hardware_irq)
+pico_enable_stdio_usb(fp_host 1)
+pico_enable_stdio_uart(fp_host 0)
+pico_add_extra_outputs(fp_host)
