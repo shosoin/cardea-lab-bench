@@ -1,0 +1,61 @@
+menu "Lab bench: fingerprint sensor emulator (R502-F Pro)"
+
+    config LAB_FP_EMU
+        bool "Emulate a GROW R502-F Pro fingerprint module on a UART"
+        default n
+        help
+            Speaks the module's packet protocol (EF01 header, 57600 8N1 by default) from its user
+            manual (V1.1, 2024-03): every documented command, template and image transfers,
+            password, address, notepad, AutoEnroll / AutoIdentify, the 0x55 byte at power-on, the
+            WAKEUP (touch) line and the host-switched main power. Which "finger" is on the
+            sensor, image quality and faults are set from the console ("fp ..."). Test bench
+            only: anything that speaks this UART impersonates the sensor, by design.
+
+    config LAB_FP_UART_NUM
+        int "UART peripheral"
+        depends on LAB_FP_EMU
+        range 1 2
+        default 1
+
+    config LAB_FP_TX_GPIO
+        int "TX GPIO (module TXD, to the host's RX)"
+        depends on LAB_FP_EMU
+        range 0 48
+        default 6
+
+    config LAB_FP_RX_GPIO
+        int "RX GPIO (module RXD, from the host's TX)"
+        depends on LAB_FP_EMU
+        range 0 48
+        default 7
+
+    config LAB_FP_WAKEUP_GPIO
+        int "WAKEUP GPIO (touch output: low while a finger is on the sensor; -1 = unused)"
+        depends on LAB_FP_EMU
+        range -1 48
+        default 15
+
+    config LAB_FP_POWER_GPIO
+        int "Main power GPIO, read from the host (-1 = module always powered)"
+        depends on LAB_FP_EMU
+        range -1 48
+        default 16
+        help
+            The host's power switch for the module's main supply (on the Cardea Key PCB, the
+            gate of the AO3401A P-MOSFET). The emulator reads it: with the module off it does
+            not answer, its TX floats and its RAM buffers are lost, as on the real module.
+            The input has a pull-up, so a host pin left floating means "off" (as the PCB's
+            gate pull-up does).
+
+    config LAB_FP_POWER_ACTIVE_LOW
+        bool "Power line is active low (0 = module powered)"
+        depends on LAB_FP_EMU && LAB_FP_POWER_GPIO >= 0
+        default y
+
+    config LAB_FP_CAPACITY
+        int "Template library size"
+        depends on LAB_FP_EMU
+        range 1 1500
+        default 1500
+
+endmenu

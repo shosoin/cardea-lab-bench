@@ -5,10 +5,11 @@
  * Modules, each one switchable in menuconfig ("Lab bench: ..."):
  *   se05x_bridge  stands in for an NXP SE05x secure element on I2C (relays to SE050Sim)
  *   bench_io      presses the host's button / BOOTSEL and resets it (RUN)
+ *   fp_emu        stands in for the GROW R502-F Pro fingerprint module on a UART
  * They share the status LED and the command console (lab_common).
  *
  * This is a lab prototype, not a security device: it exists to defeat, on purpose, what a real
- * device must enforce (user presence, a real secure element).
+ * device must enforce (user presence, a real secure element, a real finger).
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
@@ -22,6 +23,9 @@
 #if CONFIG_LAB_SE05X_BRIDGE
 #include "se05x_bridge.h"
 #endif
+#if CONFIG_LAB_FP_EMU
+#include "fp_emu.h"
+#endif
 
 void app_main(void) {
     lab_led_init();
@@ -34,6 +38,9 @@ void app_main(void) {
         nvs_flash_erase();
         nvs_flash_init();
     }
+#if CONFIG_LAB_FP_EMU
+    fp_emu_start();                              /* after NVS: its "flash" lives there */
+#endif
 #if CONFIG_LAB_SE05X_BRIDGE
     se05x_bridge_start();
 #endif

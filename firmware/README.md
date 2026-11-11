@@ -9,15 +9,17 @@ firmware/
     lab_common/               status LED + command console (one command per line, replies "BENCH ...")
     se05x_bridge/             I2C target standing in for an NXP SE05x, relaying to SE050Sim
     bench_io/                 BOOTSEL / user button and RUN lines of the host
+    fp_emu/                   GROW R502-F Pro fingerprint module emulator (UART, WAKEUP, power)
   config.local.h              Wi-Fi + simulator address (from config.local.h.example; ignored by git)
 ```
 
-Each module has its own `Kconfig` menu ("Lab bench: ...") with an on/off switch and its pins; `sdkconfig.defaults` turns them all on. A module that is off is not compiled and registers no console commands. A planned third module, `fp_emu`, will emulate the fingerprint sensor ([#2](https://github.com/shosoin/cardea-lab-bench/issues/2)).
+Each module has its own `Kconfig` menu ("Lab bench: ...") with an on/off switch and its pins; `sdkconfig.defaults` turns them all on. A module that is off is not compiled and registers no console commands.
 
 | Module | Default pins |
 |---|---|
 | `se05x_bridge` | SDA GPIO8, SCL GPIO9, address `0x48` |
 | `bench_io` | BOOTSEL GPIO4, RUN GPIO5 |
+| `fp_emu` | UART1 TX GPIO6, RX GPIO7, WAKEUP GPIO15, power (input) GPIO16 |
 | `lab_common` | WS2812 LED GPIO48 (`-1`: none); console on the DevKit's USB-UART |
 
 ## Module `se05x_bridge`
@@ -73,6 +75,98 @@ Open the console with **DTR and RTS both asserted**. On the DevKit, other combin
 the auto-program circuit and reset the S3 (and drop the simulator connection).
 
 This is for a test bench only: pressing the button from software defeats user presence.
+
+## Module `fp_emu`: GROW R502-F Pro fingerprint module
+
+Stands in for the fingerprint module (`components/fp_emu/`), so the host's fingerprint code can be
+written and tested without the sensor, and without a person touching it. Written from the module's
+user manual, *R502F-Pro 指纹识别模块用户手册* V1.1 (March 2024, from hzgrow.com's download page);
+the real module is the reference and wins where they differ.
+
+| ESP32-S3 | Host (Raspberry Pi Pico 2, same GPIOs as the Cardea Key PCB) | Module pin it replaces |
+|---|---|---|
+| GPIO6, UART1 TX | GP9, UART1 RX (220 Ω in series) | 3, TXD |
+| GPIO7, UART1 RX | GP8, UART1 TX (1 kΩ in series) | 4, RXD |
+| GPIO15 | GP10 (220 Ω; 4.7 kΩ to GND on the host side, RP2350-E9) | 5, WAKEUP |
+| GPIO16 (input) | GP11, the host's power switch (on the PCB, the P-MOSFET gate: 0 = on) | 1, VCC (switched) |
+| GND | GND | 2, GND |
+
+**What it does**, all from the manual:
+
+- UART at 57600 8N1 (9600 × N with N = 1/2/4/6/12 after `SetSysPara`, from the next power-on);
+  packets `EF01` | address | packet id | length | payload | checksum.
+- The 31 documented commands: `GetImage`, `GenChar`, `Match`, `Search`, `RegModel`, `StoreChar`,
+  `LoadChar`, `UpChar`, `DownChar`, `UpImage`, `DownImage`, `DeleteChar`, `Empty`, `SetSysPara`,
+  `ReadSysPara`, `SetPwd`, `VfyPwd`, `GetRandomCode`, `SetAddr`, `ReadInfPage`, `WriteNotepad`,
+  `ReadNotepad`, `ValidTemplateNum`, `ReadIndexTable`, `Cancel`, `HandShake`, `GetAlgVer`,
+  `GetFwVer`, `AuraLedConfig`, `AutoEnroll` (6 captures, steps 0x01–0x0F, overwrite / duplicate /
+  step report / lift options) and `AutoIdentify` (steps 1–3, retry count). Others answer `0xFC`.
+- RAM lost at power-off (image buffer 192 × 192 at 4 bits per pixel, six character buffers) and
+  "flash" kept in NVS (1500-slot library, password, address, parameters, 512-byte notepad).
+- **Password**: once set, the first command after power-on must be `VfyPwd` (others answer
+  `0x21`). There is **no link encryption**: the R502-F Pro has none (other GROW models, e.g. the
+  R558-S, do have key commands).
+- **Power**: with GPIO16 "off" it answers nothing and its TX floats; at power-on it waits 50 ms
+  and sends `0x55`. Switching it back on less than 2 s after switching it off is logged and
+  counted (the manual forbids it).
+- **WAKEUP** is low while a finger is on the sensor, also with the main supply off (the touch
+  circuit has its own supply). "Unplugged" leaves it floating.
+- The LED ring commands the host sends, and the module's own signalling during `AutoEnroll` /
+  `AutoIdentify` (charts 6.3 / 6.4), are logged for the tests to check.
+
+**Fingers are synthetic.** A finger is a number (`A`..`Z` = 1..26); its images and templates are
+generated from it, so a finger matches itself and nothing else. Templates are 512 bytes (`FPE1`,
+kind, count, finger, filler, sum) and images carry a small header (`FPI1`, finger, quality), so
+data uploaded from the emulator can be downloaded again and still match. Data in any other format
+is accepted but never matches (`StoreChar` of it answers `0x1B`).
+
+**Console** (replies `BENCH OK fp ...`):
+
+| Command | |
+|---|---|
+| `fp status` | power, finger, baud rate, address, password, library size, operation in progress |
+| `fp finger <F> [good\|messy\|small\|fail]` | put finger F on the sensor. `messy` / `small`: image taken, no features (`0x06` / `0x07`); `fail`: no image (`0x03`) |
+| `fp finger off`, `fp lift` | lift it |
+| `fp tap <F> [n] [on_ms] [off_ms] [quality]` | n touches in the background (default 1, 600, 600), e.g. for `AutoEnroll` with "lift between captures" |
+| `fp power [on\|off\|pin]` | force the main supply, or follow GPIO16 (default) |
+| `fp unplug`, `fp plug` | module disconnected: no answers, TX and WAKEUP float |
+| `fp next <cmd\|any> <fault> [arg]` | fault on the next answer to that command (hex code or name): `code XX`, `silent`, `badsum`, `short` (half a packet), `garbage` (noise before it), `delay MS`, `reboot` (the module restarts instead of answering). Up to 8 queued; `fp next clear` |
+| `fp led [clear]` | last LED ring events, newest first: `host:breath/80/7col/0`, `module:on/0/green/0` |
+| `fp db`, `fp db set <slot> <F>`, `fp db del <slot>` | library: list / add / delete without going through the protocol |
+| `fp factory` | erase the emulated flash (library, password, address, parameters, notepad) |
+| `fp opt speed fast\|real`, `score N`, `timeout MS`, `trace 0\|1\|2` | processing delays off/on (default real), `MatchScore` of a match (150), timeout of the automatic operations (10 s), log level (2 = every byte) |
+| `fp stats [clear]` | commands, bad checksums, other addresses, bad lengths, wrong passwords, power-ons, too-fast power cycles, faults |
+
+**Choices where the manual is silent or contradicts itself**, marked `UNVERIFIED` in the code, to
+check against the real module (the tests in `tools/fp-test` run unchanged against it through
+`tools/pico-fp-host`):
+
+| Case | Emulator | Why |
+|---|---|---|
+| Packet for another address | no answer | the manual says the module "rejects" it; code `0x20` exists but answering on a shared line would collide |
+| Password set, any command but `VfyPwd` (even `HandShake`) | `0x21` | "the first command must be VfyPwd" |
+| Command while `AutoEnroll` / `AutoIdentify` runs (except `Cancel`) | ignored, no answer | not described |
+| `Cancel` | `0x00`; the cancelled operation sends nothing more | not described |
+| Timeout of the automatic operations | 10 s (`fp opt timeout`) | text says 10 s, charts say 15 s |
+| `AutoEnroll` with the library full | `0x1F` | table says `0x1F`, chart says `0x0B` |
+| `AutoEnroll` on a used slot without overwrite | `0x22` | chart says `0x22`; the table calls `0x22` "template empty" |
+| `AutoEnroll` step packets | carry the slot number in every step | the manual's example does; its table shows `0x0000` until the last step |
+| `AutoEnroll` waiting for the finger to lift | also times out | the manual only times out a missing finger |
+| `AutoIdentify`: features fail | `0x07`, counts as a failed attempt | `0x07` is not in its list |
+| `AutoIdentify` retry | waits for the finger to lift and touch again | otherwise one long touch would use up all retries at once |
+| `UpChar` / `DownChar` buffer id | uses the id given (1..6) | the manual says the id is unused, then uses buffer 2 in an example |
+| `RegModel` | merges every buffer holding a single-image feature (needs ≥ 2), result in buffer 1, clears 2..6 | it does not say which buffers |
+| `GenChar` / `Search` / `StoreChar` / `LoadChar` with buffer id outside 1..6 | `0x01` | not listed |
+| `SetSysPara` with a bad value | `0x1A` | only a bad parameter number is listed |
+| Data packet size (parameter 6) | 32/64/128/256 accepted | the parameter table allows 0..3, section 3.3.3 only 2 |
+| Notepad page or index page out of range | `0x1A` | not listed |
+| `ReadSysPara` status register | bit 1 last match/search passed, bit 2 password verified, bit 3 image in buffer | bit meaning from older GROW manuals (R303S); this one does not define them |
+| Factory security level | 3 | not given |
+| `GetFwVer`, `GetAlgVer`, `ReadInfPage` | emulator strings (`fp_emu-...`) | the real strings are unknown: a host must not depend on them |
+| Processing time (`speed real`) | image 100 ms, features 200 ms, search 10 ms | the manual gives only "< 500 ms" and "< 10 ms per print" |
+
+This module defeats biometrics on purpose: an external fingerprint module can be impersonated by
+anything that speaks its UART. Lab and test boards only.
 
 ## Console (`lab_common`)
 

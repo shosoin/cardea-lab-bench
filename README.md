@@ -4,7 +4,7 @@ Test equipment on **one ESP32-S3 board**, so firmware for a Raspberry Pi Pico / 
 
 - **I2C bridge emulating an NXP SE05x / SE051 secure element**: the host talks real I2C to what it believes is the chip, and **[SE050Sim](https://github.com/wolfSSL/simulators)**, wolfSSL's simulator, answers. Many thanks to wolfSSL for publishing it.
 - **Remote control of the host board**: presses its BOOTSEL / user button and resets it (RUN), so a script can flash it, reboot it and confirm user presence.
-- **Fingerprint sensor emulator** for the R502 family (R502-F Pro), planned ([#2](https://github.com/shosoin/cardea-lab-bench/issues/2)).
+- **Fingerprint sensor emulator** for the GROW R502-F Pro: the module's whole UART protocol, written from its user manual, with synthetic fingers, a template library and fault injection, so the host's fingerprint code can be developed and tested without the sensor or a finger.
 
 Each function is a separate module that can be switched off. It was built for [Cardea Key](https://github.com/shosoin/cardea-key), but nothing here is specific to it. (Formerly `se05x-lab-bridge`.)
 
@@ -20,7 +20,7 @@ SE050Sim TCP server
 
 The bridge relays raw T=1 frames between the I2C bus and a TCP socket and knows nothing about the applet. The firmware under test cannot tell the difference at the protocol level, so the I2C driver, the T=1 stack (e.g. NXP Plug & Trust) and the APDU usage are all exercised.
 
-> **This is a lab prototype for testing, not a security device.** The simulator keeps keys in clear, behind an unauthenticated TCP socket, and the bench module presses the host's button from software: it defeats user presence on purpose. Use it on a trusted local network, with test boards only.
+> **This is a lab prototype for testing, not a security device.** The simulator keeps keys in clear, behind an unauthenticated TCP socket, the bench module presses the host's button from software and the fingerprint emulator answers "match" for whatever finger the console says: they defeat user presence and biometrics on purpose. Use it on a trusted local network, with test boards only.
 
 ## One ESP32-S3, several pieces of test equipment
 
@@ -30,7 +30,7 @@ The firmware started as the SE05x bridge alone. Each module is an ESP-IDF compon
 |---|---|---|---|
 | `se05x_bridge` | I2C target at `0x48` that relays T=1 frames to SE050Sim over Wi-Fi/TCP | `CONFIG_LAB_SE05X_BRIDGE` | works: 16-21 ms round trip; recovers by itself when the simulator restarts |
 | `bench_io` | Presses the host's BOOTSEL / user button and resets it (RUN), through open-drain GPIOs | `CONFIG_LAB_BENCH_IO` | works: drives the unattended test battery of Cardea Key |
-| `fp_emu` | Emulates a fingerprint sensor module (R502 family, UART) with a template store | — | planned ([#2](https://github.com/shosoin/cardea-lab-bench/issues/2)) |
+| `fp_emu` | Emulates a GROW R502-F Pro fingerprint module on a UART (all 31 commands, power and WAKEUP lines, template library in NVS, fault injection) | `CONFIG_LAB_FP_EMU` | works against its manual: 23/23 end-to-end tests; not yet checked against a real module ([#2](https://github.com/shosoin/cardea-lab-bench/issues/2)) |
 | `lab_common` | Status LED and the shared command console (`BENCH ...` replies) | always on | works |
 
 Other parts of the repository:
@@ -38,6 +38,8 @@ Other parts of the repository:
 | Part | State |
 |---|---|
 | `tools/pico-probe/` — Pico / Pico 2 test program for the I2C link | works |
+| `tools/pico-fp-host/` — Pico 2 test host for a fingerprint module: its UART, WAKEUP and power lines on USB serial | works |
+| `tools/fp-test/` — Python driver for the R502 protocol and end-to-end tests of `fp_emu` (same pins as the Cardea Key PCB) | works: 23/23 |
 | `sim/` — container recipe for the simulator | works |
 
 ## The firmware (`firmware/`)
