@@ -131,6 +131,11 @@ class HostLink:
     def rxpin(self):
         return int(self.cmd("rxpin").split()[-1])
 
+    def wakepin(self):
+        """WAKEUP read plain, under a brief pull-down / pull-up (buffer off), and pull-down on."""
+        r = self.cmd("wakepin").split()[2:]
+        return {k: int(v) for k, v in (x.split("=") for x in r)}
+
     def baud(self, b):
         self.cmd(f"baud {b}")
 

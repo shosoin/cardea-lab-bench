@@ -74,7 +74,7 @@ class Report:
 # ------------------------------------------------------------------ who places the fingers
 
 class EmuFingers:
-    """fp_emu: fingers and power from the S3 console and the Pico's GP11."""
+    """fp_emu: fingers and power from the S3 console (GP11 is not used, as with the real module)."""
     real = False
 
     def __init__(self, m):
@@ -90,7 +90,7 @@ class EmuFingers:
                     raise
 
     def setup(self, speed):
-        for c in ("plug", "power pin", "lift", "next clear", "factory", f"opt speed {speed}",
+        for c in ("plug", "power on", "lift", "next clear", "factory", f"opt speed {speed}",
                   "opt timeout 10000", "led clear"):
             self.fp(c)
 
@@ -103,11 +103,21 @@ class EmuFingers:
     def say(self, title, text, popup=False):
         print(f"  [{title}] {text}", flush=True)
 
+    def line_state(self, state, text):
+        cmds = {"idle": ["plug", "power on", "lift"], "finger": ["finger A"],
+                "wake_wire_off": ["lift", "unplug"], "vcc_off": ["plug", "power off"],
+                "vcc_off_finger": ["finger A"], "all_off": ["lift", "power on", "unplug"],
+                "back": ["plug", "power on", "lift"]}[state]
+        for c in cmds:
+            self.fp(c)
+        time.sleep(0.1)
+
     def power_cycle(self, why):
-        self.m.link.power(False)
+        # from the S3's console, not GP11: like the real module on the bench, which has no switch
+        self.fp("power off")
         time.sleep(0.3)
         self.m.link.flush()
-        self.m.link.power(True)
+        self.fp("power on")
         time.sleep(0.5)               # 0x55 comes at the new baud rate if it changed: just wait
         self.m.link.flush()
 
@@ -132,6 +142,15 @@ class Person:
             subprocess.Popen(["zenity", "--error" if error else "--info", f"--title={title}",
                               f"--text={text}", "--width=420", "--timeout=60"], env=env,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def line_state(self, state, text):
+        """Asks for a wiring / finger state and waits for the person to click OK."""
+        print(f"\n>>> {text}\n    (pulsa Aceptar en el popup cuando esté)", flush=True)
+        env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0.0"))
+        subprocess.Popen(["paplay", SOUNDS + "complete.oga"], env=env, stderr=subprocess.DEVNULL)
+        subprocess.run(["zenity", "--info", "--title=Cardea: línea WAKEUP", f"--text={text}",
+                        "--width=440"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.3)
 
     def place(self, finger, hint):
         print(f"    toca con el {FINGERS[finger]}{' (' + hint + ')' if hint else ''}  [anillo azul]",
@@ -331,6 +350,38 @@ class Session:
             self.notepad0[p] = d
         s["notepad_nonzero_pages"] = [p for p, d in self.notepad0.items() if any(d)]
         print(f"   baud {s['baud']}, {n} templates in {sorted(used)[:12]}{'...' if len(used) > 12 else ''}")
+
+    LINE_STATES = (
+        ("idle", "Sensor conectado, SIN dedo encima."),
+        ("finger", "Pon un dedo en el sensor y DÉJALO puesto; pulsa Aceptar con la otra mano. "
+                   "Levántalo cuando salga el siguiente aviso."),
+        ("wake_wire_off", "Levanta el dedo. Desconecta SOLO el cable AZUL (WAKEUP) del pad 14 "
+                          "(el resto sigue conectado)."),
+        ("vcc_off", "Vuelve a conectar el AZUL. Ahora desconecta SOLO el ROJO (VCC) del pad 36; el "
+                    "BLANCO (3.3VT) sigue puesto. Es el sensor «apagado» de la PCB. Sin dedo."),
+        ("vcc_off_finger", "Con el ROJO todavía suelto: pon un dedo y déjalo puesto; Aceptar con la "
+                           "otra mano."),
+        ("all_off", "Levanta el dedo. Vuelve a poner el ROJO y luego saca el conector entero del "
+                    "sensor (lado del módulo): todo suelto."),
+        ("back", "Vuelve a poner el conector del sensor. Todo conectado como al principio, sin dedo."),
+    )
+
+    def s_lines(self, s):
+        """WAKEUP (and the module's TX) in each state, for the removed-sensor check (dev#52)."""
+        for state, text in self.LINE_STATES:
+            self.who.line_state(state, text)
+            reads = [self.link.wakepin() for _ in range(20)]
+            agg = {k: sorted({r[k] for r in reads}) for k in reads[0]}
+            s[state] = {"wakepin": agg, "rxpin": self.link.rxpin(),
+                        "handshake": self.answer(self.fp.handshake, timeout=0.5)}
+            if not isinstance(s[state]["handshake"], (str,)):
+                s[state]["handshake"] = code_name(s[state]["handshake"])
+            print(f"   {state:15} {agg}  rxpin={s[state]['rxpin']}  handshake={s[state]['handshake']}",
+                  flush=True)
+            self.r.save()
+        time.sleep(0.5)
+        self.link.flush()
+        s["baud_after"] = self.find_baud()
 
     def s_identity(self, s):
         c, sp = self.fp.read_sys_para()
@@ -585,6 +636,8 @@ class Session:
         t0 = time.time()
         self.section("state", self.s_state)
         self.section("identity", self.s_identity)
+        if a.only != "identity" and not a.skip_lines:
+            self.section("lines", self.s_lines)
         if a.only == "identity":
             self.section("notepad", self.s_notepad)
             self.fp.write_notepad(15, self.notepad0.get(15, bytes(32)))
@@ -633,6 +686,7 @@ def main():
     g.add_argument("--real", action="store_true", help="a real module, touched by a person")
     ap.add_argument("--wipe", action="store_true", help="allowed to empty the module's library")
     ap.add_argument("--only", choices=["identity"], help="read-only identity check")
+    ap.add_argument("--skip-lines", action="store_true", help="skip the WAKEUP line states (wiring)")
     ap.add_argument("--repeats", type=int, default=20, help="Match repeats per pair (20)")
     ap.add_argument("--speed", default="fast", help="fp_emu speed: fast | real")
     ap.add_argument("--leave-b-at-100", action="store_true",

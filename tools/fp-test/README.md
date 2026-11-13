@@ -23,7 +23,7 @@ make                                         # fp_host.uf2
 It writes nothing to flash beyond its own image (about 32 KB at the start), so data kept by other
 firmware at the end of the flash survives; the firmware it replaces has to be flashed back
 afterwards. USB serial commands: `ping`, `baud N`, `pwr 0|1` (1 = module powered, GP11 low),
-`tx <hex>`, `wake`, `rxpin`; it sends `RX <hex>` with the module's bytes and `WAKE <0|1>` on
+`tx <hex>`, `wake`, `rxpin`, `wakepin`; it sends `RX <hex>` with the module's bytes and `WAKE <0|1>` on
 changes. `rxpin` reads GP9 against a pull-down with the input buffer off while it settles
 (RP2350-E9), to tell a floating TX (module off) from an idle one.
 
@@ -58,7 +58,9 @@ choices marked `UNVERIFIED` in `firmware/README.md`.
 ## Measurement battery (`measure_r502.py`)
 
 One session with the real module measures everything the key's sensor hardening needs
-(cardea-key-dev#42, plan in #5 here): identity (`ReadSysPara`, info page, versions, random),
+(cardea-key-dev#42, plan in #5 here): the WAKEUP line (and the module's TX) in 7 wiring / finger
+states, read plain and under brief pulls (`wakepin` in pico-fp-host; for telling a removed sensor
+from a touch, cardea-key-dev#52), identity (`ReadSysPara`, info page, versions, random),
 notepad, two fingers enrolled the way the key does it (A mixed, B by zone: centre, left edge, right
 edge, tip; 4 templates × 4 touches each), `UpChar` sizes and repeatability, `Match` of every pair
 (self-match included, 20 repeats), `DownChar` of a real, a corrupted and a random template, 115200
