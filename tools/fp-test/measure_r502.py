@@ -100,7 +100,7 @@ class EmuFingers:
     def lift(self):
         self.fp("lift")
 
-    def say(self, title, text, popup=False):
+    def say(self, title, text, popup=False, error=False):
         print(f"  [{title}] {text}", flush=True)
 
     def line_state(self, state, text):
@@ -132,25 +132,36 @@ class Person:
     def setup(self, speed):
         pass
 
+    def confirm(self, title, text):
+        """Big popup that waits for OK (the person reads it, does it, then clicks)."""
+        print(f"\n>>> {title}: {text}\n    (esperando a que pulses Aceptar)", flush=True)
+        env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0.0"))
+        subprocess.Popen(["sh", "-c", f"for i in 1 2; do paplay {SOUNDS}complete.oga; done"], env=env,
+                         stderr=subprocess.DEVNULL)
+        big = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "\n\n")
+        subprocess.run(["zenity", "--info", f"--title={title}", "--width=900",
+                        f"--text=<span size='xx-large'>{big}</span>"], env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.3)
+
     def say(self, title, text, popup=False, error=False):
         print(f"\n>>> {title}: {text}\n", flush=True)
+        if popup == "wait":
+            return self.confirm(title, text)
         if popup:
             env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0.0"))
             snd = SOUNDS + ("dialog-warning.oga" if error else "complete.oga")
             subprocess.Popen(["sh", "-c", f"for i in 1 2 3; do paplay {snd}; done"], env=env,
                              stderr=subprocess.DEVNULL)
+            big = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "\n\n")
             subprocess.Popen(["zenity", "--error" if error else "--info", f"--title={title}",
-                              f"--text={text}", "--width=420", "--timeout=60"], env=env,
+                              f"--text=<span size='xx-large'>{big}</span>", "--width=900",
+                              "--timeout=120"], env=env,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def line_state(self, state, text):
         """Asks for a wiring / finger state and waits for the person to click OK."""
-        print(f"\n>>> {text}\n    (pulsa Aceptar en el popup cuando esté)", flush=True)
-        env = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0.0"))
-        subprocess.Popen(["paplay", SOUNDS + "complete.oga"], env=env, stderr=subprocess.DEVNULL)
-        subprocess.run(["zenity", "--info", "--title=Cardea: línea WAKEUP", f"--text={text}",
-                        "--width=440"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(0.3)
+        self.confirm(f"Cardea: línea WAKEUP ({state})", text)
 
     def place(self, finger, hint):
         print(f"    toca con el {FINGERS[finger]}{' (' + hint + ')' if hint else ''}  [anillo azul]",
@@ -161,9 +172,10 @@ class Person:
         print("    levanta el dedo", flush=True)
 
     def power_cycle(self, why):
-        self.say("Cardea: apagar y encender el sensor",
-                 f"{why}\nDesenchufa el USB de la Pico 2 (la de la llave), espera 3 s y vuelve a "
-                 "enchufarlo. El script sigue solo.", popup=True)
+        self.say("Cardea: desenchufar el USB de la Pico",
+                 f"{why}\nDesenchufa el cable USB de la Pico 2 (la llave; NO la sonda ni el S3).\n"
+                 "Déjalo fuera 3 segundos y vuelve a enchufarlo.\nNo hace falta pulsar nada: el "
+                 "script lo nota solo.", popup=True)
         m = self.m
         m.link.alive = False
         t0 = time.time()
@@ -352,18 +364,23 @@ class Session:
         print(f"   baud {s['baud']}, {n} templates in {sorted(used)[:12]}{'...' if len(used) > 12 else ''}")
 
     LINE_STATES = (
-        ("idle", "Sensor conectado, SIN dedo encima."),
-        ("finger", "Pon un dedo en el sensor y DÉJALO puesto; pulsa Aceptar con la otra mano. "
-                   "Levántalo cuando salga el siguiente aviso."),
-        ("wake_wire_off", "Levanta el dedo. Desconecta SOLO el cable AZUL (WAKEUP) del pad 14 "
-                          "(el resto sigue conectado)."),
-        ("vcc_off", "Vuelve a conectar el AZUL. Ahora desconecta SOLO el ROJO (VCC) del pad 36; el "
-                    "BLANCO (3.3VT) sigue puesto. Es el sensor «apagado» de la PCB. Sin dedo."),
-        ("vcc_off_finger", "Con el ROJO todavía suelto: pon un dedo y déjalo puesto; Aceptar con la "
-                           "otra mano."),
-        ("all_off", "Levanta el dedo. Vuelve a poner el ROJO y luego saca el conector entero del "
-                    "sensor (lado del módulo): todo suelto."),
-        ("back", "Vuelve a poner el conector del sensor. Todo conectado como al principio, sin dedo."),
+        ("idle", "Paso 1 de 7\nTodo conectado.\nNO toques el sensor.\nPulsa Aceptar."),
+        ("finger", "Paso 2 de 7\nPon un dedo en el sensor y DÉJALO PUESTO.\n"
+                   "Pulsa Aceptar con la otra mano.\nNo lo levantes hasta el siguiente aviso (unos 3 s)."),
+        ("wake_wire_off", "Paso 3 de 7\nLevanta el dedo.\nDesconecta SOLO el cable AZUL (WAKEUP), pad 14.\n"
+                          "Los demás siguen puestos.\nDéjalo suelto y pulsa Aceptar.\n"
+                          "Estará fuera unos 5 segundos, hasta el siguiente aviso."),
+        ("vcc_off", "Paso 4 de 7\nVuelve a conectar el AZUL (pad 14).\n"
+                    "Ahora desconecta SOLO el ROJO (VCC), pad 36.\nEl BLANCO sigue puesto en el pad 36.\n"
+                    "No toques el sensor. Pulsa Aceptar.\nEl rojo estará fuera unos 10 segundos."),
+        ("vcc_off_finger", "Paso 5 de 7\nEl ROJO sigue suelto.\nPon un dedo en el sensor y DÉJALO PUESTO.\n"
+                           "Pulsa Aceptar con la otra mano.\nNo lo levantes hasta el siguiente aviso (unos 3 s)."),
+        ("all_off", "Paso 6 de 7\nLevanta el dedo.\nVuelve a conectar el ROJO al pad 36.\n"
+                    "Ahora saca el CONECTOR del sensor (el pequeño, en el propio sensor): todo suelto.\n"
+                    "Pulsa Aceptar.\nEstará fuera unos 5 segundos."),
+        ("back", "Paso 7 de 7\nVuelve a poner el CONECTOR en el sensor.\nComprueba que están los 6 cables: "
+                 "rojo y blanco pad 36, negro 13, verde 11, amarillo 12, azul 14.\nNo toques el sensor. "
+                 "Pulsa Aceptar."),
     )
 
     def s_lines(self, s):
@@ -382,6 +399,8 @@ class Session:
         time.sleep(0.5)
         self.link.flush()
         s["baud_after"] = self.find_baud()
+        self.who.say("Cardea: cables terminados", "Ya no hay que soltar más cables.\n"
+                     "Siguiente: las altas de dos dedos (te aviso).", popup=True)
 
     def s_identity(self, s):
         c, sp = self.fp.read_sys_para()
@@ -408,16 +427,20 @@ class Session:
             return
         c = self.fp.empty()
         s["empty_before"] = code_name(c)
-        self.who.say("Cardea: alta de dos dedos",
-                     "16 toques con el dedo A (moviéndolo un poco entre toques) y luego 16 con el "
-                     "dedo B por zonas (centro, borde izquierdo, borde derecho, punta). Toca cuando "
-                     "el anillo esté azul y levanta al ver el verde.", popup=True)
+        self.who.say("Cardea: alta del dedo A",
+                     "Elige el DEDO A (por ejemplo, índice derecho) y recuérdalo.\n"
+                     "16 toques: toca cuando el anillo esté AZUL, levanta al ver el VERDE.\n"
+                     "Mueve un poco el dedo entre toques.\nPulsa Aceptar para empezar.", popup="wait")
         for k in range(4):
             log = s.setdefault(f"A_slot{k}", [])
             self.enroll("A", k, "mezclado", log)
         for k in range(4):
             log = s.setdefault(f"B_slot{4 + k}", [])
-            self.who.say("zona", f"dedo B, plantilla {k + 1}: {ZONES_B[k]}")
+            self.who.say("Cardea: dedo B por zonas",
+                         ("Dedo A terminado.\nElige el DEDO B (otro distinto, por ejemplo corazón "
+                          "derecho) y recuérdalo.\n" if k == 0 else "") +
+                         f"Dedo B, parte {k + 1} de 4: {ZONES_B[k].upper()}\n"
+                         "4 toques apoyando esa zona del dedo.\nPulsa Aceptar para empezar.", popup="wait")
             self.enroll("B", 4 + k, ZONES_B[k], log)
         s["template_num"] = self.fp.template_num()[1]
         s["done"] = True
@@ -457,8 +480,9 @@ class Session:
         s["real_store_100"] = code_name(self.fp.store(1, 100))
         c, data, n, ms = self.up_slot(100)
         s["real_100_identical"] = data == a0
-        self.who.say("Cardea: un toque con el dedo A", "Para ver si una plantilla copiada vale.",
-                     popup=True)
+        self.who.say("Cardea: un toque con el DEDO A",
+                     "Un solo toque con el DEDO A (el primero).\nPulsa Aceptar y toca cuando el anillo "
+                     "esté azul.", popup="wait")
         log = []
         self.capture(1, "A", "", log)
         c, page, score = self.fp.search(1, 100, 1)
@@ -653,7 +677,7 @@ class Session:
             self.section("downchar", self.s_downchar)
             self.section("baud", self.s_baud)
             self.section("password_set", self.s_password_set)
-            self.who.power_cycle("Primer apagado: ¿se conservan contraseña, libreta y plantillas?")
+            self.who.power_cycle("Apagado 1 de 2.")
             self.section("after_power_cycle", self.s_after_cycle)
             self.section("templates_after_cycle", lambda s: self.s_templates(s, "after"))
             self.section("match_after_cycle", lambda s: self.s_match(s, max(3, a.repeats // 4)))
@@ -661,7 +685,7 @@ class Session:
             self.section("password_clear", self.s_password_clear)
             self.section("empty_vs_notepad", self.s_empty)
             self.section("cleanup", self.s_cleanup)
-            self.who.power_cycle("Segundo apagado: comprobar que el sensor queda como nuevo.")
+            self.who.power_cycle("Apagado 2 de 2 (el último).")
             self.section("final", self.s_final)
         finally:
             if self.pwd_set or self.baud_changed and self.r.sec("final").get("baud") != 57600:
