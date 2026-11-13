@@ -134,8 +134,22 @@ is accepted but never matches (`StoreChar` of it answers `0x1B`).
 | `fp led [clear]` | last LED ring events, newest first: `host:breath/80/7col/0`, `module:on/0/green/0` |
 | `fp db`, `fp db set <slot> <F>`, `fp db del <slot>` | library: list / add / delete without going through the protocol |
 | `fp factory` | erase the emulated flash (library, password, address, parameters, notepad) |
-| `fp opt speed fast\|real`, `score N`, `timeout MS`, `trace 0\|1\|2` | processing delays off/on (default real), `MatchScore` of a match (150), timeout of the automatic operations (10 s), log level (2 = every byte) |
+| `fp opt speed fast\|real`, `score N`, `timeout MS`, `trace 0\|1\|2`, `pwdgate 0\|1` | processing delays off/on (default real), `MatchScore` of a capture against its finger (150), timeout of the automatic operations (10 s), log level (2 = every byte), require `VfyPwd` first when a password is set (default 0, as the real module) |
 | `fp stats [clear]` | commands, bad checksums, other addresses, bad lengths, wrong passwords, power-ons, too-fast power cycles, faults |
+
+**Measured on the real R502-F Pro** (2026-11-13, cardea-key-dev#42; the emulator does the same):
+
+| Case | Real module |
+|---|---|
+| Password set, after a power cut | gates nothing: every command answers without `VfyPwd`; `VfyPwd` only says `0x00` / `0x13`, no lockout (55 wrong ones tried). `fp opt pwdgate 1` emulates a module that would gate |
+| `SetSysPara` baud rate (parameter 4) | applies at once, after the answer |
+| `DownChar` of data that is not a template | answers `0x00`, drops it in silence; the buffer keeps what it held (so `StoreChar` stores that) |
+| `DownChar` of a template with a byte changed | taken as sent; `StoreChar` re-encodes it (`UpChar` of the slot gives other bytes) |
+| `Match` | a template against itself: 409, always; two templates of the same finger from different enrolments: no match (0, now and then 35-52); a fresh capture against its finger: match |
+| `Empty` | does not clear the notepad |
+| `ReadSysPara` system identifier | 600 |
+| WAKEUP | idle high through ~10 kΩ, low with a finger, also with VCC off (only 3.3VT); a cut line floats (reads 0 only under a brief pull-down with the input buffer off, RP2350-E9) |
+| Versions | `GetFwVer` `V1.0.1`, `GetAlgVer` `V3.5.3` (the emulator keeps its own strings) |
 
 **Choices where the manual is silent or contradicts itself**, marked `UNVERIFIED` in the code, to
 check against the real module (the tests in `tools/fp-test` run unchanged against it through
@@ -144,7 +158,6 @@ check against the real module (the tests in `tools/fp-test` run unchanged agains
 | Case | Emulator | Why |
 |---|---|---|
 | Packet for another address | no answer | the manual says the module "rejects" it; code `0x20` exists but answering on a shared line would collide |
-| Password set, any command but `VfyPwd` (even `HandShake`) | `0x21` | "the first command must be VfyPwd" |
 | Command while `AutoEnroll` / `AutoIdentify` runs (except `Cancel`) | ignored, no answer | not described |
 | `Cancel` | `0x00`; the cancelled operation sends nothing more | not described |
 | Timeout of the automatic operations | 10 s (`fp opt timeout`) | text says 10 s, charts say 15 s |

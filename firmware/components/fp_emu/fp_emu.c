@@ -19,8 +19,10 @@
  *  - RAM (lost at power-off): one image buffer (192x192, 4 bits per pixel as on the wire) and six
  *    character buffers. "Flash" (kept in NVS, survives power-off and a reboot of this chip):
  *    template library, password, address, system parameters, 512-byte notepad.
- *  - Password: once set (not 0), the first command after power-on must be VfyPwd; anything else
- *    answers 0x21. There is no encryption: the R502-F Pro has none.
+ *  - Password: as on the real R502-F Pro (measured 2026-11-13), a password set gates nothing:
+ *    every command answers after power-on; VfyPwd only says 0x00 / 0x13, with no lockout.
+ *    "fp opt pwdgate 1" makes VfyPwd mandatory first (0x21), as the manual suggests. There is no
+ *    encryption: the R502-F Pro has none.
  *  - Power: the host switches the module's main supply (LAB_FP_POWER_GPIO). Off: no answers, TX
  *    floats, RAM lost. On: 50 ms later the module sends 0x55 and takes commands. Switching it
  *    back on less than 2 s after switching it off is counted and logged (the manual forbids it).
@@ -31,7 +33,10 @@
  * templates are generated from it, so the same finger always matches itself and nothing else.
  * Templates are 512 bytes ("FPE1", kind, count, finger, filler, sum); images carry a small header
  * ("FPI1", finger, quality) in their first bytes. Data downloaded by the host in another format is
- * stored as is but never matches (StoreChar of it answers 0x1B, GenChar of such an image 0x06).
+ * dropped in silence, the buffer keeping what it held (DownChar still answers 0x00, as the real
+ * module does); a downloaded image in another format gives 0x06 at GenChar. Match: a template
+ * against itself 409, two merged templates of a finger no match, a capture against its finger's
+ * template the opt score (all as measured on the real module, 2026-11-13).
  *
  * Console ("fp ...", replies start with "BENCH"):
  *   fp status                        power, finger, settings, library size, busy operation
@@ -49,7 +54,7 @@
  *   fp led [clear]                   last LED ring commands (host's and the module's own)
  *   fp db | fp db set <slot> <F> | fp db del <slot>   library: list / add / delete
  *   fp factory                       erase the emulated flash (library, password, address...)
- *   fp opt speed fast|real | score N | timeout MS | trace 0|1|2
+ *   fp opt speed fast|real | score N | timeout MS | trace 0|1|2 | pwdgate 0|1
  *   fp stats [clear]                 command / error counters
  *
  * Test bench only: it shows on purpose that an external fingerprint module can be impersonated by
@@ -130,6 +135,7 @@ typedef struct {
     uint8_t notepad[16][32];
     uint16_t finger[CAP];      /* 0 = empty slot */
     uint8_t meta[CAP];         /* kind << 4 | merged count (low nibble, saturates at 15) */
+    uint8_t variant[CAP];      /* which template of that finger (two enrolments never match) */
 } flash_t;
 
 static flash_t fl;
@@ -198,16 +204,20 @@ typedef struct {
     uint8_t kind;          /* 1 = feature (one image), 2 = template (merged) */
     uint8_t count;
     uint16_t finger;
+    uint8_t variant;       /* every capture and every merged template gets its own (1..255) */
     uint8_t raw[TPL_BYTES];
 } charbuf_t;
 static charbuf_t cb[NBUF + 1];           /* 1..6 */
 
-/* Download from the host (DownChar / DownImage) */
+/* Download from the host (DownChar / DownImage); a template lands in dl_tpl first */
 static struct { int what; int buf; size_t got; bool overflow; } dl;   /* what: 0, 'c', 'i' */
+static uint8_t dl_tpl[TPL_BYTES];
 
 /* Options */
 static bool fast;                        /* no processing delays */
 static uint16_t opt_score = 150;         /* MatchScore of a match (the manual's example: 0xBD) */
+#define SCORE_SAME 409                   /* real R502-F Pro: a template against itself, always */
+static bool opt_pwdgate = false;         /* real module: a password set gates nothing (2026-11-13) */
 static uint32_t opt_timeout_ms = 10000;  /* AutoEnroll/AutoIdentify; UNVERIFIED: text 10 s, chart 15 s */
 static int trace = 1;
 
@@ -312,12 +322,13 @@ static uint16_t sum16(const uint8_t *d, size_t n) {
     return (uint16_t)s;
 }
 
-static void tpl_make(uint8_t *t, uint16_t finger, uint8_t kind, uint8_t count) {
+static void tpl_make(uint8_t *t, uint16_t finger, uint8_t kind, uint8_t count, uint8_t variant) {
     t[0] = 'F'; t[1] = 'P'; t[2] = 'E'; t[3] = '1';
     t[4] = kind; t[5] = count;
     t[6] = finger >> 8; t[7] = finger & 0xFF;
-    uint32_t x = 0x9E3779B9u ^ ((uint32_t)finger << 8) ^ kind;
-    for (int i = 8; i < TPL_BYTES - 2; i++) {
+    t[8] = variant;
+    uint32_t x = 0x9E3779B9u ^ ((uint32_t)finger << 8) ^ kind ^ ((uint32_t)variant << 24);
+    for (int i = 9; i < TPL_BYTES - 2; i++) {
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         t[i] = (uint8_t)x;
     }
@@ -325,11 +336,13 @@ static void tpl_make(uint8_t *t, uint16_t finger, uint8_t kind, uint8_t count) {
     t[TPL_BYTES - 2] = s >> 8; t[TPL_BYTES - 1] = s & 0xFF;
 }
 
-static bool tpl_parse(const uint8_t *t, uint16_t *finger, uint8_t *kind, uint8_t *count) {
+/* A downloaded template is taken if its header makes sense; the rest is not checked (the real
+ * module took a template with one byte changed and re-encoded it on StoreChar, 2026-11-13). */
+static bool tpl_parse(const uint8_t *t, uint16_t *finger, uint8_t *kind, uint8_t *count, uint8_t *variant) {
     if (memcmp(t, "FPE1", 4)) return false;
-    if (sum16(t, TPL_BYTES - 2) != (uint16_t)(t[TPL_BYTES - 2] << 8 | t[TPL_BYTES - 1])) return false;
     *kind = t[4]; *count = t[5];
     *finger = (uint16_t)(t[6] << 8 | t[7]);
+    *variant = t[8];
     return *finger != 0 && (*kind == 1 || *kind == 2);
 }
 
@@ -367,13 +380,17 @@ static bool img_parse(uint16_t *finger, uint8_t *q) {
     return *finger != 0;
 }
 
-static void cb_set(int b, uint16_t finger, uint8_t kind, uint8_t count) {
+static void cb_set(int b, uint16_t finger, uint8_t kind, uint8_t count, uint8_t variant) {
     cb[b].st = CB_VALID;
     cb[b].finger = finger;
     cb[b].kind = kind;
     cb[b].count = count;
-    tpl_make(cb[b].raw, finger, kind, count);
+    cb[b].variant = variant;
+    tpl_make(cb[b].raw, finger, kind, count, variant);
 }
+
+/* A new merged template: its own variant (1..255), so two enrolments of a finger differ. */
+static uint8_t new_variant(void) { return (uint8_t)(1 + esp_random() % 255); }
 
 /* ---------------------------------------------------------------- LED log */
 
@@ -687,9 +704,10 @@ static void enroll_step(int64_t now) {
             }
         }
         enroll_packet(C_OK, 0x0E, false);
-        cb_set(1, ao.fingers[0], 2, 6);
+        cb_set(1, ao.fingers[0], 2, 6, new_variant());
         fl.finger[ao.id] = ao.fingers[0];
         fl.meta[ao.id] = 2 << 4 | 6;
+        fl.variant[ao.id] = cb[1].variant;
         flash_save();
         led_auto(L_ON, COL_GREEN);
         enroll_packet(C_OK, 0x0F, true);
@@ -740,7 +758,7 @@ static void ident_step(int64_t now) {
             ident_fail_attempt(C_FEWPTS, 2);       /* UNVERIFIED: 0x07 is not in the AutoIdentify list */
             break;
         }
-        cb_set(1, (uint16_t)(img[4] << 8 | img[5]), 1, 1);
+        cb_set(1, (uint16_t)(img[4] << 8 | img[5]), 1, 1, new_variant());
         ident_packet(C_OK, 2, 0, 0, false);
         ao_phase(PH_SEARCH);
         ao.due = now + (fast ? 0 : 10);
@@ -858,7 +876,9 @@ static void handle_command(const uint8_t *p, size_t n) {
         reply(C_PKT);
         return;
     }
-    if (!pwd_ok && c != 0x13) { reply(C_NEEDPWD); return; }   /* UNVERIFIED: even HandShake */
+    /* Real R502-F Pro: a password set gates nothing (every command answers after a power cut,
+     * 2026-11-13). fp opt pwdgate 1 emulates a module that would require VfyPwd first. */
+    if (opt_pwdgate && !pwd_ok && c != 0x13) { reply(C_NEEDPWD); return; }
 
     switch (c) {
     case 0x01:                                                    /* GetImage */
@@ -876,15 +896,21 @@ static void handle_command(const uint8_t *p, size_t n) {
         work_delay(200);
         if (!img_parse(&f, &q) || q == Q_MESSY) { reply(C_MESSY); break; }
         if (q == Q_SMALL) { reply(C_FEWPTS); break; }
-        cb_set(p[1], f, 1, 1);
+        cb_set(p[1], f, 1, 1, new_variant());   /* every capture differs */
         reply(C_OK);
         break;
     }
 
     case 0x03: {                                                  /* Match: CharBuffer 1 vs 2 */
-        bool m = cb[1].st == CB_VALID && cb[2].st == CB_VALID && cb[1].finger == cb[2].finger;
+        /* Real R502-F Pro (2026-11-13): a template against itself 409, always; two merged templates
+         * of the same finger (different enrolments) ~0, no match; a fresh capture against a
+         * template of its finger matches (opt score). */
+        bool both = cb[1].st == CB_VALID && cb[2].st == CB_VALID;
+        bool same_tpl = both && cb[1].finger == cb[2].finger && cb[1].kind == cb[2].kind &&
+                        cb[1].count == cb[2].count && cb[1].variant == cb[2].variant;
+        bool m = same_tpl || (both && cb[1].finger == cb[2].finger && (cb[1].kind == 1 || cb[2].kind == 1));
         last_pass = m;
-        put16(out, m ? opt_score : 0);
+        put16(out, same_tpl ? SCORE_SAME : m ? opt_score : 0);
         reply_with(m ? C_OK : C_NOMATCH, out, 2);
         break;
     }
@@ -918,7 +944,7 @@ static void handle_command(const uint8_t *p, size_t n) {
         }
         work_delay(50);
         if (nfeat < 2 || !same) { reply(C_MERGE); break; }
-        cb_set(1, f, 2, (uint8_t)nfeat);
+        cb_set(1, f, 2, (uint8_t)nfeat, new_variant());
         for (int b = 2; b <= NBUF; b++) cb[b].st = CB_EMPTY;
         reply(C_OK);
         break;
@@ -931,6 +957,7 @@ static void handle_command(const uint8_t *p, size_t n) {
         if (cb[p[1]].st != CB_VALID) { reply(C_BADDATA); break; }  /* UNVERIFIED */
         fl.finger[id] = cb[p[1]].finger;
         fl.meta[id] = (uint8_t)(cb[p[1]].kind << 4 | (cb[p[1]].count > 15 ? 15 : cb[p[1]].count));
+        fl.variant[id] = cb[p[1]].variant;      /* stored re-encoded: LoadChar gives the canonical bytes */
         flash_save();
         work_delay(20);
         reply(C_OK);
@@ -942,7 +969,7 @@ static void handle_command(const uint8_t *p, size_t n) {
         if (!buf_ok(p[1])) { reply(C_PKT); break; }
         if (id >= CAP) { reply(C_RANGE); break; }
         if (!fl.finger[id]) { reply(C_LOADBAD); break; }
-        cb_set(p[1], fl.finger[id], fl.meta[id] >> 4, fl.meta[id] & 0xF);
+        cb_set(p[1], fl.finger[id], fl.meta[id] >> 4, fl.meta[id] & 0xF, fl.variant[id]);
         reply(C_OK);
         break;
     }
@@ -972,7 +999,7 @@ static void handle_command(const uint8_t *p, size_t n) {
     case 0x0C: {                                                  /* DeleteChar */
         uint16_t start = get16(p + 1), num = get16(p + 3);
         if (num == 0 || start >= CAP || (uint32_t)start + num > CAP) { reply(C_DELFAIL); break; }
-        for (uint32_t i = start; i < (uint32_t)start + num; i++) { fl.finger[i] = 0; fl.meta[i] = 0; }
+        for (uint32_t i = start; i < (uint32_t)start + num; i++) { fl.finger[i] = 0; fl.meta[i] = 0; fl.variant[i] = 0; }
         flash_save();
         reply(C_OK);
         break;
@@ -981,12 +1008,13 @@ static void handle_command(const uint8_t *p, size_t n) {
     case 0x0D:                                                    /* Empty */
         memset(fl.finger, 0, sizeof(fl.finger));
         memset(fl.meta, 0, sizeof(fl.meta));
+        memset(fl.variant, 0, sizeof(fl.variant));
         flash_save();
         work_delay(50);
         reply(C_OK);
         break;
 
-    case 0x0E: {                                                  /* SetSysPara (next power-on) */
+    case 0x0E: {                                                  /* SetSysPara */
         uint8_t idx = p[1], v = p[2];
         bool ok;
         if (idx == 4) ok = v == 1 || v == 2 || v == 4 || v == 6 || v == 12;
@@ -999,13 +1027,18 @@ static void handle_command(const uint8_t *p, size_t n) {
         else fl.pkt_code = v;
         flash_save();
         reply(C_OK);
+        if (idx == 4) {              /* real module: the baud rate changes at once, after the answer */
+            uart_wait_tx_done(UARTN, pdMS_TO_TICKS(100));
+            baud_active = 9600u * fl.baud_n;
+            uart_set_baudrate(UARTN, baud_active);
+        }                            /* UNVERIFIED: packet size and security level at the next power-on */
         break;
     }
 
     case 0x0F: {                                                  /* ReadSysPara */
         uint16_t status = (uint16_t)((last_pass ? 2 : 0) | (pwd_ok ? 4 : 0) | (img_valid ? 8 : 0));
         put16(out, status);              /* bits from older GROW manuals: Busy, Pass, PWD, ImgBufStat */
-        put16(out + 2, 0x0000);
+        put16(out + 2, 600);             /* system identifier of the real R502-F Pro */
         put16(out + 4, CAP);
         put16(out + 6, fl.security);
         put32(out + 8, fl.addr);
@@ -1110,7 +1143,7 @@ static void handle_data(uint8_t pid, const uint8_t *d, size_t n) {
         if (trace) ESP_LOGW(TAG, "data packet with no transfer open: dropped");
         return;
     }
-    uint8_t *dst = dl.what == 'c' ? cb[dl.buf].raw : img;
+    uint8_t *dst = dl.what == 'c' ? dl_tpl : img;
     size_t max = dl.what == 'c' ? TPL_BYTES : IMG_BYTES;
     if (dl.got + n > max) dl.overflow = true;
     else memcpy(dst + dl.got, d, n);
@@ -1119,11 +1152,17 @@ static void handle_data(uint8_t pid, const uint8_t *d, size_t n) {
 
     bool complete = !dl.overflow && dl.got == max;
     if (dl.what == 'c') {
+        /* Real R502-F Pro (2026-11-13): data that is not a template is dropped in silence (DownChar
+         * answered 0x00) and the buffer keeps what it held; a template is taken as sent. */
         charbuf_t *b = &cb[dl.buf];
-        if (complete && tpl_parse(b->raw, &b->finger, &b->kind, &b->count)) b->st = CB_VALID;
-        else b->st = complete ? CB_FOREIGN : CB_EMPTY;
-        if (trace) ESP_LOGI(TAG, "DownChar: %u bytes into buffer %d (%s)", (unsigned)dl.got, dl.buf,
-                            b->st == CB_VALID ? "emulator template" : b->st == CB_FOREIGN ? "foreign data" : "wrong size");
+        uint16_t f; uint8_t k, n2, v;
+        bool ok = complete && tpl_parse(dl_tpl, &f, &k, &n2, &v);
+        if (ok) {
+            memcpy(b->raw, dl_tpl, TPL_BYTES);
+            b->st = CB_VALID; b->finger = f; b->kind = k; b->count = n2; b->variant = v;
+        }
+        if (trace) ESP_LOGI(TAG, "DownChar: %u bytes for buffer %d (%s)", (unsigned)dl.got, dl.buf,
+                            ok ? "template taken" : complete ? "not a template: dropped, buffer unchanged" : "wrong size: dropped");
     }
     else {
         img_valid = complete;
@@ -1320,6 +1359,7 @@ static void fp_db(char **sp) {
             if (f < 0) { lab_console_reply("ERR fp db set <slot> <finger>"); return; }
             fl.finger[slot] = (uint16_t)f;
             fl.meta[slot] = 2 << 4 | 6;
+            fl.variant[slot] = new_variant();
         }
         else {
             fl.finger[slot] = 0;
@@ -1344,14 +1384,15 @@ static void fp_db(char **sp) {
 
 static void fp_opt(char **sp) {
     char *k = next_tok(sp), *v = next_tok(sp);
-    if (!k || !v) { lab_console_reply("ERR fp opt speed fast|real | score N | timeout MS | trace 0|1|2"); return; }
+    if (!k || !v) { lab_console_reply("ERR fp opt speed fast|real | score N | timeout MS | trace 0|1|2 | pwdgate 0|1"); return; }
     if (!strcasecmp(k, "speed")) fast = !strcasecmp(v, "fast");
     else if (!strcasecmp(k, "score")) opt_score = (uint16_t)strtol(v, NULL, 10);
     else if (!strcasecmp(k, "timeout")) opt_timeout_ms = (uint32_t)strtol(v, NULL, 10);
     else if (!strcasecmp(k, "trace")) trace = (int)strtol(v, NULL, 10);
+    else if (!strcasecmp(k, "pwdgate")) opt_pwdgate = strtol(v, NULL, 10) != 0;
     else { lab_console_reply("ERR fp opt: unknown option '%s'", k); return; }
-    lab_console_reply("OK fp opt speed=%s score=%u timeout=%lu trace=%d", fast ? "fast" : "real", opt_score,
-                      (unsigned long)opt_timeout_ms, trace);
+    lab_console_reply("OK fp opt speed=%s score=%u timeout=%lu trace=%d pwdgate=%d", fast ? "fast" : "real", opt_score,
+                      (unsigned long)opt_timeout_ms, trace, opt_pwdgate);
 }
 
 static void cmd_fp(char *arg) {

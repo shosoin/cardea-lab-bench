@@ -59,6 +59,7 @@ def setup():
     bench.fp("factory")
     bench.fp("opt speed " + os.environ.get("FP_SPEED", "fast"))
     bench.fp("opt timeout 10000")
+    bench.fp("opt pwdgate 0")
     bench.fp("led clear")
     link.baud(57600)
     fp.addr, fp.pkt = 0xFFFFFFFF, 128
@@ -122,7 +123,7 @@ def wakeup_line():
 def sys_params_and_versions():
     c, p = fp.read_sys_para()
     eq(c, 0)
-    eq((p["capacity"], p["addr"], p["pkt_code"], p["baud_n"], p["sysid"]), (1500, 0xFFFFFFFF, 2, 6, 0))
+    eq((p["capacity"], p["addr"], p["pkt_code"], p["baud_n"], p["sysid"]), (1500, 0xFFFFFFFF, 2, 6, 600))
     eq(fp.alg_ver()[0], 0)
     eq(fp.fw_ver()[0], 0)
     c, page, n = fp.read_inf_page()
@@ -192,6 +193,16 @@ def match_two_buffers():
     fp.get_image(); fp.gen_char(2)
     eq(fp.match(), (0x08, 0), "A vs B")
     bench.fp("lift")
+    # stored templates, as measured on the real module (2026-11-13)
+    enroll_manual("A", 0)
+    enroll_manual("A", 1)
+    eq((fp.load(1, 0), fp.load(2, 0)), (0, 0))
+    eq(fp.match(), (0, 409), "a template against itself: 409")
+    eq(fp.load(2, 1), 0)
+    eq(fp.match(), (0x08, 0), "two enrolments of the same finger: no match")
+    present("A")
+    eq(fp.load(2, 1), 0)
+    eq(fp.match()[0], 0, "a fresh capture against its finger's template")
 
 
 @test
@@ -228,9 +239,24 @@ def template_transfers():
     eq(fp.store(1, 9), 0, "store the downloaded template")
     present("D")
     eq(fp.search()[:2], (0, 9))
-    eq(fp.down_char(1, bytes(range(256)) * 2), 0)
+    # not a template: DownChar says 0x00 but drops it; the buffer keeps what it held (real module)
+    eq(fp.load(1, 9), 0)
+    eq(fp.down_char(1, bytes(range(256)) * 2), 0, "DownChar of foreign data still answers 0x00")
     time.sleep(0.2)
-    eq(fp.store(1, 10), 0x1B, "foreign template")
+    eq(fp.up_char(1)[1], tpl, "foreign data dropped, buffer unchanged")
+    eq(fp.store(1, 10), 0, "StoreChar stores the old buffer")
+    eq(fp.load(2, 10), 0)
+    eq(fp.match(), (0, 409), "slot 10 is a copy of slot 9")
+    # a template with one byte changed: taken as sent, re-encoded on StoreChar
+    bad = bytearray(tpl)
+    bad[256] ^= 0xFF
+    eq(fp.down_char(1, bytes(bad)), 0)
+    time.sleep(0.2)
+    eq(fp.up_char(1)[1], bytes(bad), "changed template taken as sent")
+    eq(fp.store(1, 11), 0)
+    eq(fp.load(1, 11), 0)
+    c, back, _ = fp.up_char(1)
+    eq(back != bytes(bad) and back == tpl, True, "re-encoded on StoreChar")
     bench.fp("lift")
 
 
@@ -266,13 +292,20 @@ def delete_and_empty():
 def password():
     eq(fp.set_pwd(0x12345678), 0)
     power_cycle()
-    eq(fp.handshake(), 0x21, "password required")
-    eq(fp.vfy_pwd(1), 0x13, "wrong password")
+    eq(fp.handshake(), 0, "a password set gates nothing (real module)")
+    eq(fp.read_notepad(0)[0], 0, "notepad readable without VfyPwd")
+    for _ in range(20):
+        eq(fp.vfy_pwd(1), 0x13, "wrong password")
+    eq(fp.vfy_pwd(0x12345678), 0, "no lockout after 20 wrong ones")
+    bench.fp("opt pwdgate 1")                 # a module that would require VfyPwd first
+    power_cycle()
+    eq(fp.handshake(), 0x21, "pwdgate: password required")
     eq(fp.vfy_pwd(0x12345678), 0)
     eq(fp.handshake(), 0)
+    bench.fp("opt pwdgate 0")
     eq(fp.set_pwd(0), 0)
     power_cycle()
-    eq(fp.handshake(), 0, "no password again")
+    eq(fp.vfy_pwd(0), 0, "no password again")
 
 
 @test
@@ -301,28 +334,23 @@ def notepad():
 @test
 def packet_size_and_baud():
     eq(fp.set_sys_para(6, 0), 0, "32-byte data packets")
-    eq(fp.set_sys_para(4, 12), 0, "115200 baud")
     eq(fp.set_sys_para(5, 9), 0x1A, "security level 9")
     eq(fp.set_sys_para(8, 1), 0x1A, "parameter 8")
-    eq(fp.handshake(), 0, "still 57600 until the next power-on")
-    link.power(False)
-    time.sleep(0.05)
+    eq(fp.set_sys_para(4, 12), 0, "115200 baud (answered at 57600)")
     link.baud(115200)
+    time.sleep(0.05)
     link.flush()
-    link.power(True)
-    fp.wait_ready()
-    eq(fp.handshake(), 0, "115200")
+    eq(fp.handshake(), 0, "115200 at once (real module)")
+    power_cycle()
     c, page, n = fp.read_inf_page()
     eq((c, len(page), n), (0, 512, 16), "512 bytes in 32-byte packets")
     fp.set_sys_para(6, 2)
     fp.set_sys_para(4, 6)
-    link.power(False)
-    time.sleep(0.05)
     link.baud(57600)
+    time.sleep(0.05)
     link.flush()
-    link.power(True)
-    fp.wait_ready()
-    eq(fp.handshake(), 0, "back to 57600")
+    eq(fp.handshake(), 0, "back to 57600 at once")
+    power_cycle()
 
 
 @test
