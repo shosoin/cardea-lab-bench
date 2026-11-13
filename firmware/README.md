@@ -181,6 +181,12 @@ check against the real module (the tests in `tools/fp-test` run unchanged agains
 This module defeats biometrics on purpose: an external fingerprint module can be impersonated by
 anything that speaks its UART. Lab and test boards only.
 
+**Fault injection** (console `se ...`, for the key's tests, cardea-key-dev#54): `se unplug` (the I2C
+target is removed: the host gets NACKs, as with no SE), `se hang` (frames taken, never answered),
+`se garble N` (the next N responses with a broken CRC), `se delay MS` (each response later), `se ok`
+(back to normal), `se status`. Limit: the bridge cannot NACK while busy as the chip does, so a delay
+above ~50-100 ms makes the host give up where the real SE would not (#8).
+
 ## Console (`lab_common`)
 
 One command per line on the console UART; every reply is one line starting with `BENCH` (`BENCH OK ...` or `BENCH ERR ...`), so a host script can skip the log lines that share the port. Built in: `ping`. An unknown command answers with the list of the registered ones. A module adds its commands with `lab_console_register()`.

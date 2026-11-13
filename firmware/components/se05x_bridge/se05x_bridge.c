@@ -14,6 +14,14 @@
  *
  * Status: USB console logs; the RGB LED stays OFF and only gives short, dim flashes for events.
  *
+ * Fault injection (console, for the key's tests: cardea-key-dev#54):
+ *   se status                 mode and counters
+ *   se unplug                 the SE is gone: the I2C target is removed, the host gets NACKs
+ *   se hang                   the SE takes frames but never answers (the host polls in vain)
+ *   se garble N               the next N responses carry a broken CRC (the host retransmits)
+ *   se delay MS               every response MS later (0 = off)
+ *   se ok                     everything back to normal (target re-created)
+ *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 #include <string.h>
@@ -30,6 +38,9 @@
 #include "driver/gpio.h"
 #include "sdkconfig.h"
 #include "lab_led.h"
+#include "lab_console.h"
+#include <stdlib.h>
+#include <strings.h>
 #include "se05x_bridge.h"
 
 /* Wi-Fi and simulator address: config.local.h (ignored by git, next to the project's CMakeLists).
@@ -155,7 +166,13 @@ static size_t sim_exchange(const uint8_t *req, size_t req_len, uint8_t *resp) {
 }
 
 /* ---------------------------------------------------------------- I2C target */
-typedef enum { EV_FRAME, EV_READ, EV_RESET } bridge_ev_type_t;
+typedef enum { EV_FRAME, EV_READ, EV_RESET, EV_UNPLUG } bridge_ev_type_t;
+
+/* Fault injection */
+typedef enum { SE_OK = 0, SE_UNPLUGGED, SE_HUNG } se_mode_t;
+static volatile se_mode_t se_mode = SE_OK;
+static volatile uint32_t garble_left, delay_ms, n_hung, n_garbled;
+static const char *const mode_names[] = { "ok", "unplugged", "hung" };
 typedef struct {
     bridge_ev_type_t type;
     uint16_t len;
@@ -217,7 +234,9 @@ static void i2c_restart(void) {
         i2c_del_slave_device(i2c_dev);
         i2c_dev = NULL;
     }
-    i2c_start();
+    if (se_mode != SE_UNPLUGGED) {
+        i2c_start();
+    }
 }
 
 static void hex(const char *what, const uint8_t *d, size_t n) {
@@ -250,9 +269,16 @@ static void sim_task(void *arg) {
         taskEXIT_CRITICAL(&slot_lock);
         hex("host -> SE", local_req, n);
         sim_busy = true;
+        if (delay_ms) vTaskDelay(pdMS_TO_TICKS(delay_ms));
         size_t m = sim_exchange(local_req, n, local_resp);
         sim_busy = false;
         if (!m) continue;
+        if (garble_left) {                       /* fault injection: broken CRC */
+            garble_left--;
+            n_garbled++;
+            local_resp[m - 1] ^= 0x5A;
+            ESP_LOGW(TAG, "fault: response CRC broken (%lu left)", (unsigned long)garble_left);
+        }
         hex("SE -> host", local_resp, m);
         /* Optional filler after NAD+PCB (BRIDGE_FILL_AFTER_HEADER): a workaround for a dropped
          * byte seen before the FIFO-first write below; kept switchable to verify it is unneeded. */
@@ -337,6 +363,14 @@ static void i2c_task(void *arg) {
     static bridge_ev_t ev;
     for (;;) {
         if (xQueueReceive(events, &ev, portMAX_DELAY) != pdTRUE) continue;
+        if (ev.type == EV_UNPLUG) {
+            taskENTER_CRITICAL(&slot_lock);
+            out_len = 0;
+            taskEXIT_CRITICAL(&slot_lock);
+            i2c_restart();                        /* se_mode is SE_UNPLUGGED: removed, not re-created */
+            xQueueReset(events);
+            continue;
+        }
         if (ev.type == EV_RESET) {
             taskENTER_CRITICAL(&slot_lock);
             out_len = 0;
@@ -362,6 +396,10 @@ static void i2c_task(void *arg) {
             taskEXIT_CRITICAL(&slot_lock);
             i2c_restart();
             xQueueReset(events);                  /* drop the read request of the old peripheral */
+            if (se_mode == SE_HUNG) {             /* fault injection: taken, never answered */
+                n_hung++;
+                continue;
+            }
             xTaskNotifyGive(sim_task_handle);
         }
         else {
@@ -401,6 +439,45 @@ static void i2c_task(void *arg) {
     }
 }
 
+static void cmd_se(char *arg) {
+    char *save = NULL;
+    char *a = arg ? strtok_r(arg, " ", &save) : NULL;
+    char *v = a ? strtok_r(NULL, " ", &save) : NULL;
+    static bridge_ev_t ev_unplug = { .type = EV_UNPLUG }, ev_reset = { .type = EV_RESET };
+    if (!a || !strcasecmp(a, "status")) {
+        /* fall through to the reply */
+    }
+    else if (!strcasecmp(a, "unplug")) {
+        se_mode = SE_UNPLUGGED;
+        xQueueSend(events, &ev_unplug, pdMS_TO_TICKS(100));
+    }
+    else if (!strcasecmp(a, "hang")) {
+        if (se_mode == SE_UNPLUGGED) xQueueSend(events, &ev_reset, pdMS_TO_TICKS(100));
+        se_mode = SE_HUNG;
+    }
+    else if (!strcasecmp(a, "garble") && v) {
+        garble_left = (uint32_t)strtoul(v, NULL, 10);
+    }
+    else if (!strcasecmp(a, "delay") && v) {
+        delay_ms = (uint32_t)strtoul(v, NULL, 10);
+        if (delay_ms > 30000) delay_ms = 30000;
+    }
+    else if (!strcasecmp(a, "ok")) {
+        bool was_unplugged = se_mode == SE_UNPLUGGED;
+        se_mode = SE_OK;
+        garble_left = 0;
+        delay_ms = 0;
+        if (was_unplugged) xQueueSend(events, &ev_reset, pdMS_TO_TICKS(100));
+    }
+    else {
+        lab_console_reply("ERR se status | unplug | hang | garble N | delay MS | ok");
+        return;
+    }
+    lab_console_reply("OK se mode=%s garble_left=%lu delay=%lu hung=%lu garbled=%lu frames=%lu",
+                      mode_names[se_mode], (unsigned long)garble_left, (unsigned long)delay_ms,
+                      (unsigned long)n_hung, (unsigned long)n_garbled, (unsigned long)n_frames);
+}
+
 void se05x_bridge_start(void) {
     events = xQueueCreate(8, sizeof(bridge_ev_t));
     wifi_start();
@@ -409,5 +486,6 @@ void se05x_bridge_start(void) {
     xTaskCreate(i2c_task, "i2c", 4096, NULL, 12, NULL);
     xTaskCreate(stats_task, "stats", 3072, NULL, 2, NULL);
     xTaskCreate(watchdog_task, "wdog", 3072, NULL, 3, NULL);
+    lab_console_register("se", "se status|unplug|hang|garble N|delay MS|ok", cmd_se);
     sim_connect();                               /* connect early so the first frame is fast */
 }
