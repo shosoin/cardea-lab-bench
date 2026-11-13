@@ -130,7 +130,7 @@ is accepted but never matches (`StoreChar` of it answers `0x1B`).
 | `fp tap <F> [n] [on_ms] [off_ms] [quality]` | n touches in the background (default 1, 600, 600), e.g. for `AutoEnroll` with "lift between captures" |
 | `fp power [on\|off\|pin]` | force the main supply, or follow GPIO16 (default) |
 | `fp unplug`, `fp plug` | module disconnected: no answers, TX and WAKEUP float |
-| `fp next <cmd\|any> <fault> [arg]` | fault on the next answer to that command (hex code or name): `code XX`, `silent`, `badsum`, `short` (half a packet), `garbage` (noise before it), `delay MS`, `reboot` (the module restarts instead of answering). Up to 8 queued; `fp next clear` |
+| `fp next <cmd\|any> <fault> [arg]` | fault on the next answer to that command (hex code or name): `code XX`, `silent`, `badsum`, `short` (half a packet), `garbage` (noise before it), `delay MS`, `reboot` (the module restarts instead of answering), `page N` (answers "ok, slot N" whatever range was asked: a `Search` that ignored its range). Up to 8 queued; `fp next clear` |
 | `fp led [clear]` | last LED ring events, newest first: `host:breath/80/7col/0`, `module:on/0/green/0` |
 | `fp db`, `fp db set <slot> <F>`, `fp db del <slot>` | library: list / add / delete without going through the protocol |
 | `fp factory` | erase the emulated flash (library, password, address, parameters, notepad) |

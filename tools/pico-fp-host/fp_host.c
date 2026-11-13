@@ -3,7 +3,7 @@
  * real one or the bench's fp_emu): it exposes the module's lines on USB serial, so a script on the
  * PC drives the module the way the key's firmware will. Same pins as the Cardea Key PCB:
  *
- *   GP8  UART1 TX  -> module RXD          GP10 WAKEUP <- module (low = finger), external pull-down
+ *   GP8  UART1 TX  -> module RXD          GP10 WAKEUP <- module (low = finger), no pulls (floats high)
  *   GP9  UART1 RX  <- module TXD          GP11 main power switch (0 = module powered, as the PCB's
  *                                              P-MOSFET gate); starts at 1 (off)
  *
@@ -110,7 +110,7 @@ int main(void) {
     gpio_set_dir(PIN_PWR, GPIO_OUT);
     gpio_init(PIN_WAKE);
     gpio_set_dir(PIN_WAKE, GPIO_IN);
-    gpio_disable_pulls(PIN_WAKE);              /* the board has the external pull-down (RP2350-E9) */
+    gpio_disable_pulls(PIN_WAKE);              /* no pulls: what works with the real module (RP2350-E9) */
 
     stdio_init_all();
     uart_init(FP_UART, 57600);

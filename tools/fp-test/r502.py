@@ -310,7 +310,7 @@ class R502:
 
     def index_table(self, page=0):
         c, r = self.command(0x1F, bytes([page]))
-        return c, {page * 256 + k for k in range(256) if r[k // 8] >> (k % 8) & 1}
+        return c, {page * 256 + k for k in range(min(256, len(r) * 8)) if r[k // 8] >> (k % 8) & 1}
 
     def cancel(self): return self.command(0x30)[0]
     def handshake(self, timeout=2.0): return self.command(0x40, timeout=timeout)[0]

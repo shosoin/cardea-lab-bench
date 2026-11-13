@@ -111,7 +111,7 @@ def wakeup_line():
     bench.fp("lift")
     bench.fp("unplug")
     time.sleep(0.05)
-    eq(link.wake(), 0, "unplugged: WAKEUP floats, the pull-down reads 0")
+    eq(link.wake(), 1, "unplugged: WAKEUP floats high (no pulls since 2026-11-11, RP2350-E9) = no finger")
     bench.fp("plug")
     time.sleep(0.05)
     eq(link.wake(), 1, "plugged back")
