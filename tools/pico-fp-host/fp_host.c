@@ -3,12 +3,12 @@
  * real one or the bench's fp_emu): it exposes the module's lines on USB serial, so a script on the
  * PC drives the module the way the key's firmware will. Same pins as the Cardea Key PCB:
  *
- *   GP8  UART1 TX  -> module RXD          GP10 WAKEUP <- module (low = finger), external pull-down
+ *   GP8  UART1 TX  -> module RXD          GP10 WAKEUP <- module (low = finger), no pulls (floats high)
  *   GP9  UART1 RX  <- module TXD          GP11 main power switch (0 = module powered, as the PCB's
  *                                              P-MOSFET gate); starts at 1 (off)
  *
  * USB serial, one command per line; answers "OK ..." / "ERR ...":
- *   ping | baud N | pwr 0|1 (1 = powered) | tx <hex> | wake | rxpin
+ *   ping | baud N | pwr 0|1 (1 = powered) | tx <hex> | wake | rxpin | wakepin
  *     rxpin: level of GP9 with a pull-down (0 = the module's TX floats, 1 = it drives idle)
  * Asynchronous lines: "RX <hex>" with bytes from the module, "WAKE <0|1>" when WAKEUP changes.
  *
@@ -99,8 +99,31 @@ static void cmd(char *line) {
         while (uart_is_readable(FP_UART)) (void)uart_getc(FP_UART);
         printf("OK rxpin %d\n", v);
     }
+    else if (!strcmp(line, "wakepin")) {
+        /* WAKEUP under each test (cardea-key-dev#52: telling a removed sensor from a touch):
+         * plain = no pulls; pd / pu = brief pull with the input buffer off while it settles, read
+         * right away (RP2350-E9); pd_on = pull-down with the buffer on for 2 ms (what E9 spoils). */
+        int plain = gpio_get(PIN_WAKE);
+        int r[2];
+        for (int k = 0; k < 2; k++) {
+            gpio_set_input_enabled(PIN_WAKE, false);
+            if (k == 0) gpio_pull_down(PIN_WAKE); else gpio_pull_up(PIN_WAKE);
+            sleep_ms(5);
+            gpio_set_input_enabled(PIN_WAKE, true);
+            busy_wait_us(5);
+            r[k] = gpio_get(PIN_WAKE);
+            gpio_disable_pulls(PIN_WAKE);
+            sleep_ms(1);
+        }
+        gpio_pull_down(PIN_WAKE);
+        sleep_ms(2);
+        int pd_on = gpio_get(PIN_WAKE);
+        gpio_disable_pulls(PIN_WAKE);
+        sleep_ms(1);
+        printf("OK wakepin plain=%d pd=%d pu=%d pd_on=%d\n", plain, r[0], r[1], pd_on);
+    }
     else {
-        printf("ERR unknown (ping, baud N, pwr 0|1, tx HEX, wake, rxpin)\n");
+        printf("ERR unknown (ping, baud N, pwr 0|1, tx HEX, wake, rxpin, wakepin)\n");
     }
 }
 
@@ -110,7 +133,7 @@ int main(void) {
     gpio_set_dir(PIN_PWR, GPIO_OUT);
     gpio_init(PIN_WAKE);
     gpio_set_dir(PIN_WAKE, GPIO_IN);
-    gpio_disable_pulls(PIN_WAKE);              /* the board has the external pull-down (RP2350-E9) */
+    gpio_disable_pulls(PIN_WAKE);              /* no pulls: what works with the real module (RP2350-E9) */
 
     stdio_init_all();
     uart_init(FP_UART, 57600);

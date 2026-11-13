@@ -131,6 +131,11 @@ class HostLink:
     def rxpin(self):
         return int(self.cmd("rxpin").split()[-1])
 
+    def wakepin(self):
+        """WAKEUP read plain, under a brief pull-down / pull-up (buffer off), and pull-down on."""
+        r = self.cmd("wakepin").split()[2:]
+        return {k: int(v) for k, v in (x.split("=") for x in r)}
+
     def baud(self, b):
         self.cmd(f"baud {b}")
 
@@ -310,7 +315,7 @@ class R502:
 
     def index_table(self, page=0):
         c, r = self.command(0x1F, bytes([page]))
-        return c, {page * 256 + k for k in range(256) if r[k // 8] >> (k % 8) & 1}
+        return c, {page * 256 + k for k in range(min(256, len(r) * 8)) if r[k // 8] >> (k % 8) & 1}
 
     def cancel(self): return self.command(0x30)[0]
     def handshake(self, timeout=2.0): return self.command(0x40, timeout=timeout)[0]

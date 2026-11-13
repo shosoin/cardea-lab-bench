@@ -23,7 +23,7 @@ make                                         # fp_host.uf2
 It writes nothing to flash beyond its own image (about 32 KB at the start), so data kept by other
 firmware at the end of the flash survives; the firmware it replaces has to be flashed back
 afterwards. USB serial commands: `ping`, `baud N`, `pwr 0|1` (1 = module powered, GP11 low),
-`tx <hex>`, `wake`, `rxpin`; it sends `RX <hex>` with the module's bytes and `WAKE <0|1>` on
+`tx <hex>`, `wake`, `rxpin`, `wakepin`; it sends `RX <hex>` with the module's bytes and `WAKE <0|1>` on
 changes. `rxpin` reads GP9 against a pull-down with the input buffer off while it settles
 (RP2350-E9), to tell a floating TX (module off) from an idle one.
 
@@ -54,3 +54,29 @@ unplugged module.
 3V3, since the Pico has no power switch), `HostLink` + `R502` drive the real module. Tests that
 place fingers or inject faults need the emulator's console; the rest is the checklist for the
 choices marked `UNVERIFIED` in `firmware/README.md`.
+
+## Measurement battery (`measure_r502.py`)
+
+One session with the real module measures everything the key's sensor hardening needs
+(cardea-key-dev#42, plan in #5 here): the WAKEUP line (and the module's TX) in 7 wiring / finger
+states, read plain and under brief pulls (`wakepin` in pico-fp-host; for telling a removed sensor
+from a touch, cardea-key-dev#52), identity (`ReadSysPara`, info page, versions, random),
+notepad, two fingers enrolled the way the key does it (A mixed, B by zone: centre, left edge, right
+edge, tip; 4 templates × 4 touches each), `UpChar` sizes and repeatability, `Match` of every pair
+(self-match included, 20 repeats), `DownChar` of a real, a corrupted and a random template, 115200
+baud, and the password (behaviour after power-on without `VfyPwd`, wrong attempts and timing,
+back to 0). Two power cycles. It ends with the module as new (password 0, 57600, notepad as it
+was, library empty or only finger B's centre template at slot 100 with `--leave-b-at-100`).
+
+```sh
+python3 tools/fp-test/measure_r502.py --emu --wipe                    # dry run on fp_emu, ~2 min
+python3 tools/fp-test/measure_r502.py --real --wipe --leave-b-at-100  # real module, ~30 min
+python3 tools/fp-test/measure_r502.py --real --only identity          # second unit, read-only
+```
+
+With `--real` a person touches the sensor: the module's ring says when (blue: touch, green:
+captured, lift) and a popup announces each stage. The bench has no power switch for the real module
+(it runs from the Pico's 3V3), so the power cycles are done by unplugging the Pico's USB when asked.
+Only documented commands are sent, never `SetAddr`; the only password set is the fixed `TEST_PWD`,
+written to the report before it is set and cleared at the end, also after an error. The JSON
+report keeps templates as size + SHA-256 only (they are biometric data).

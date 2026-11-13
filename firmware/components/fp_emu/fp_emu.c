@@ -43,7 +43,8 @@
  *   fp power [on|off|pin]            force the main supply, or follow the host's line (default)
  *   fp unplug | fp plug              module disconnected: no answers, TX and WAKEUP float
  *   fp next <cmd|any> <fault> [arg]  fault on the next answer to cmd (hex code or name):
- *                                    code XX | silent | badsum | short | garbage | delay MS | reboot
+ *                                    code XX | silent | badsum | short | garbage | delay MS | reboot |
+ *                                    page N (answer "ok, slot N": a Search that ignored its range)
  *   fp next clear | fp next          drop / count the queued faults
  *   fp led [clear]                   last LED ring commands (host's and the module's own)
  *   fp db | fp db set <slot> <F> | fp db del <slot>   library: list / add / delete
@@ -223,8 +224,9 @@ static led_ev_t led_log[LED_LOG];
 static uint32_t led_n;
 
 /* Faults */
-typedef enum { F_CODE, F_SILENT, F_BADSUM, F_SHORT, F_GARBAGE, F_DELAY, F_REBOOT } fault_kind_t;
-static const char *const fault_names[] = { "code", "silent", "badsum", "short", "garbage", "delay", "reboot" };
+typedef enum { F_CODE, F_SILENT, F_BADSUM, F_SHORT, F_GARBAGE, F_DELAY, F_REBOOT, F_PAGE } fault_kind_t;
+static const char *const fault_names[] = { "code", "silent", "badsum", "short", "garbage", "delay", "reboot", "page" };
+#define N_FAULT_KINDS 8
 typedef struct { int cmd; fault_kind_t k; int arg; } fault_t;
 #define MAX_FAULTS 8
 static fault_t faults[MAX_FAULTS];
@@ -508,6 +510,16 @@ static bool send_reply(const uint8_t *d, size_t n) {
         }
         case F_DELAY:
             vTaskDelay(pdMS_TO_TICKS(f.arg));
+            break;
+        case F_PAGE:                          /* a match at that slot, whatever was asked */
+            buf[0] = C_OK;
+            buf[1] = (uint8_t)(f.arg >> 8);
+            buf[2] = (uint8_t)f.arg;
+            if (n < 5) {
+                buf[3] = 0;
+                buf[4] = 200;
+                n = 5;
+            }
             break;
         case F_REBOOT:
             module_ram_reset();
@@ -1263,16 +1275,17 @@ static void fp_next(char **sp) {
     if (!strcasecmp(a, "clear")) { n_faults = 0; lab_console_reply("OK fp next cleared"); return; }
     int cmd = cmd_by_name(a);
     char *k = next_tok(sp), *v = next_tok(sp);
-    if (cmd == -2 || !k) { lab_console_reply("ERR fp next <cmd|any> <code XX|silent|badsum|short|garbage|delay MS|reboot>"); return; }
+    if (cmd == -2 || !k) { lab_console_reply("ERR fp next <cmd|any> <code XX|silent|badsum|short|garbage|delay MS|reboot|page N>"); return; }
     fault_t f = { cmd, F_CODE, 0 };
     int i;
-    for (i = 0; i < 7; i++) if (!strcasecmp(k, fault_names[i])) break;
-    if (i == 7) { lab_console_reply("ERR fp next: unknown fault '%s'", k); return; }
+    for (i = 0; i < N_FAULT_KINDS; i++) if (!strcasecmp(k, fault_names[i])) break;
+    if (i == N_FAULT_KINDS) { lab_console_reply("ERR fp next: unknown fault '%s'", k); return; }
     f.k = (fault_kind_t)i;
-    if (f.k == F_CODE || f.k == F_DELAY) {
+    if (f.k == F_CODE || f.k == F_DELAY || f.k == F_PAGE) {
         if (!v) { lab_console_reply("ERR fp next: %s needs a value", k); return; }
         f.arg = (int)strtol(v, NULL, f.k == F_CODE ? 16 : 10);
         if (f.k == F_CODE && (f.arg < 0 || f.arg > 0xFF)) { lab_console_reply("ERR fp next: code 00..FF"); return; }
+        if (f.k == F_PAGE && (f.arg < 0 || f.arg > 0xFFFF)) { lab_console_reply("ERR fp next: page 0..65535"); return; }
         if (f.k == F_DELAY && (f.arg < 1 || f.arg > 30000)) { lab_console_reply("ERR fp next: delay 1..30000 ms"); return; }
     }
     if (n_faults >= MAX_FAULTS) { lab_console_reply("ERR fp next: queue full (%d)", MAX_FAULTS); return; }
