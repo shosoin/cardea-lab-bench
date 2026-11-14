@@ -54,6 +54,8 @@
  *   fp led [clear]                   last LED ring commands (host's and the module's own)
  *   fp db | fp db set <slot> <F> | fp db del <slot>   library: list / add / delete
  *   fp factory                       erase the emulated flash (library, password, address...)
+ *   fp np [page] | fp np set <page> <64 hex> | fp np clear <page|all>   notepad: show / write / zero
+ *   fp pwd [none|<8 hex>]            password: show / set (none = 0), behind the host's back
  *   fp opt speed fast|real | score N | timeout MS | trace 0|1|2 | pwdgate 0|1
  *   fp stats [clear]                 command / error counters
  *
@@ -1458,6 +1460,54 @@ static void cmd_fp(char *arg) {
         xSemaphoreTake(mx, portMAX_DELAY);
         fp_db(&sp);
         xSemaphoreGive(mx);
+    }
+    else if (!strcasecmp(sub, "np")) {
+        char *a = next_tok(&sp), *b = next_tok(&sp), *c = next_tok(&sp);
+        xSemaphoreTake(mx, portMAX_DELAY);
+        if (!a || isdigit((unsigned char)a[0])) {                 /* show one page (default 0) */
+            int pg = a ? atoi(a) : 0;
+            if (pg < 0 || pg > 15) { xSemaphoreGive(mx); lab_console_reply("ERR fp np page 0..15"); return; }
+            char hex[65];
+            for (int i = 0; i < 32; i++) sprintf(hex + 2 * i, "%02x", fl.notepad[pg][i]);
+            xSemaphoreGive(mx);
+            lab_console_reply("OK fp np %d %s", pg, hex);
+            return;
+        }
+        if (!strcasecmp(a, "set") && b && c && strlen(c) == 64 && atoi(b) >= 0 && atoi(b) <= 15) {
+            int pg = atoi(b);
+            for (int i = 0; i < 32; i++) {
+                unsigned v;
+                if (sscanf(c + 2 * i, "%2x", &v) != 1) { xSemaphoreGive(mx); lab_console_reply("ERR fp np set: bad hex"); return; }
+                fl.notepad[pg][i] = (uint8_t)v;
+            }
+            flash_save();
+            xSemaphoreGive(mx);
+            lab_console_reply("OK fp np set %d", pg);
+            return;
+        }
+        if (!strcasecmp(a, "clear") && b) {
+            if (!strcasecmp(b, "all")) memset(fl.notepad, 0, sizeof(fl.notepad));
+            else if (atoi(b) >= 0 && atoi(b) <= 15) memset(fl.notepad[atoi(b)], 0, 32);
+            else { xSemaphoreGive(mx); lab_console_reply("ERR fp np clear <page|all>"); return; }
+            flash_save();
+            xSemaphoreGive(mx);
+            lab_console_reply("OK fp np clear %s", b);
+            return;
+        }
+        xSemaphoreGive(mx);
+        lab_console_reply("ERR fp np [page] | np set <page> <64 hex> | np clear <page|all>");
+    }
+    else if (!strcasecmp(sub, "pwd")) {
+        char *a = next_tok(&sp);
+        xSemaphoreTake(mx, portMAX_DELAY);
+        if (a) {
+            fl.pwd = !strcasecmp(a, "none") ? 0 : (uint32_t)strtoul(a, NULL, 16);
+            pwd_ok = fl.pwd == 0;
+            flash_save();
+        }
+        uint32_t v = fl.pwd;
+        xSemaphoreGive(mx);
+        lab_console_reply("OK fp pwd %08lx", (unsigned long)v);
     }
     else if (!strcasecmp(sub, "factory")) {
         xSemaphoreTake(mx, portMAX_DELAY);
