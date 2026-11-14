@@ -134,6 +134,8 @@ is accepted but never matches (`StoreChar` of it answers `0x1B`).
 | `fp led [clear]` | last LED ring events, newest first: `host:breath/80/7col/0`, `module:on/0/green/0` |
 | `fp db`, `fp db set <slot> <F>`, `fp db del <slot>` | library: list / add / delete without going through the protocol |
 | `fp factory` | erase the emulated flash (library, password, address, parameters, notepad) |
+| `fp np [page]` / `fp np set <page> <64 hex>` / `fp np clear <page\|all>` | notepad: show a page, write it, zero it (tampering behind the host's back) |
+| `fp pwd [none\|<8 hex>]` | show or set the module password behind the host's back (none = 0) |
 | `fp opt speed fast\|real`, `score N`, `timeout MS`, `trace 0\|1\|2`, `pwdgate 0\|1` | processing delays off/on (default real), `MatchScore` of a capture against its finger (150), timeout of the automatic operations (10 s), log level (2 = every byte), require `VfyPwd` first when a password is set (default 0, as the real module) |
 | `fp stats [clear]` | commands, bad checksums, other addresses, bad lengths, wrong passwords, power-ons, too-fast power cycles, faults |
 
